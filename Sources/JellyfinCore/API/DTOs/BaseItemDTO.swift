@@ -162,9 +162,15 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
         return Self.makeImageURL(itemId: pid, kind: "Logo", tag: tag, server: server, maxWidth: maxWidth)
     }
 
-    /// Selects the smallest (typically 320) trickplay variant across the
-    /// primary media source and maps to the domain model. Nil when the item
-    /// has no generated trickplay tiles.
+    /// Selects the largest available trickplay variant across the primary
+    /// media source and maps to the domain model. Nil when the item has no
+    /// generated trickplay tiles.
+    ///
+    /// The 16:9 wide slot on a focused shelf paints these into a ~853×480
+    /// region — the historical 320px-only default upscales roughly 2.7× and
+    /// reads mushy. Servers that expose multiple widths (e.g. `320,1280`)
+    /// let the shelf pick the higher-res variant; servers still on the
+    /// single 320 default get the same tiles they were getting.
     public func preferredTrickplay() -> MediaTrickplayInfo? {
         guard let byMSID = trickplay, !byMSID.isEmpty else { return nil }
         // Prefer the media source whose ID matches the primary MediaSourceDTO;
@@ -175,10 +181,8 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
             return byMSID.first!
         }()
         guard !byWidth.isEmpty else { return nil }
-        // Pick the smallest available width — 320 is the usual server default
-        // and is plenty for a card-sized thumbnail.
         let widths = byWidth.keys.compactMap { Int($0) }.sorted()
-        guard let w = widths.first, let dto = byWidth[String(w)] else { return nil }
+        guard let w = widths.last, let dto = byWidth[String(w)] else { return nil }
         return MediaTrickplayInfo(
             mediaSourceId: msid,
             width: dto.width,
