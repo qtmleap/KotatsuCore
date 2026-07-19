@@ -172,7 +172,24 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
         config.waitsForConnectivity = true
-        self.session = Session(configuration: config, interceptor: JellyfinRequestInterceptor(state: state))
+        // Sized so a full home refresh (shelves + a couple of series detail
+        // fetches) fits comfortably in memory, plus a disk backing that
+        // survives a relaunch. Serves as a safety net for the ~120s
+        // Cloudflare read timeout: subsequent same-URL fetches can fall
+        // back to the last-good response instead of a decode failure.
+        config.urlCache = URLCache(
+            memoryCapacity: 32 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024
+        )
+        config.requestCachePolicy = .useProtocolCachePolicy
+        // Jellyfin rarely emits Cache-Control on JSON endpoints, so URLSession
+        // wouldn't store the response by default. `ResponseCacher.cache`
+        // forces every 2xx into `URLCache` regardless of server headers.
+        self.session = Session(
+            configuration: config,
+            interceptor: JellyfinRequestInterceptor(state: state),
+            cachedResponseHandler: ResponseCacher.cache
+        )
     }
 
     // MARK: - Credentials
