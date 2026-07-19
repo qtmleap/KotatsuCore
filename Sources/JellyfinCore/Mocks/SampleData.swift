@@ -110,14 +110,28 @@ public enum SampleData {
                     height: 2160,
                     videoBitrate: 25_000_000,
                     audioTracks: [
-                        AudioTrackDescriptor(id: 1, language: "jpn", codec: "eac3", channels: 6, displayTitle: "日本語 · Dolby Digital+ 5.1"),
+                        AudioTrackDescriptor(
+                            id: 1,
+                            language: "jpn",
+                            codec: "eac3",
+                            channels: 6,
+                            displayTitle: "日本語 · Dolby Digital+ 5.1",
+                            spatialFormat: "DolbyAtmos"
+                        ),
                         AudioTrackDescriptor(id: 2, language: "eng", codec: "aac", channels: 2, displayTitle: "English · AAC 2.0")
                     ],
                     subtitleTracks: [
                         SubtitleTrackDescriptor(id: 1, language: "jpn", codec: "srt", displayTitle: "日本語"),
                         SubtitleTrackDescriptor(id: 2, language: "eng", codec: "srt", displayTitle: "English"),
                         SubtitleTrackDescriptor(id: 3, language: "jpn", codec: "pgssub", isImageBased: true, displayTitle: "日本語（画像字幕）")
-                    ]
+                    ],
+                    videoRange: "HDR",
+                    videoRangeType: "DOVIWithHDR10",
+                    bitDepth: 10,
+                    colorSpace: "bt2020nc",
+                    pixelFormat: "yuv420p10le",
+                    frameRate: 23.976,
+                    videoLevel: 153
                 )
             ]
         )
@@ -180,7 +194,9 @@ public enum SampleData {
             communityRating: community,
             posterURL: poster(seed: posterSeed, width: 400, height: 600),
             backdropURL: poster(seed: "\(posterSeed)-bd", width: 1920, height: 1080),
-            logoURL: nil
+            logoURL: nil,
+            overview: sampleOverview(seed: id),
+            genres: sampleGenres(seed: id, kind: .movie)
         )
     }
 
@@ -195,7 +211,9 @@ public enum SampleData {
             communityRating: community,
             posterURL: poster(seed: posterSeed, width: 400, height: 600),
             backdropURL: poster(seed: "\(posterSeed)-bd", width: 1920, height: 1080),
-            logoURL: nil
+            logoURL: nil,
+            overview: sampleOverview(seed: id),
+            genres: sampleGenres(seed: id, kind: .series)
         )
     }
 
@@ -205,6 +223,7 @@ public enum SampleData {
             runtimeSeconds: item.runtimeSeconds, officialRating: item.officialRating,
             communityRating: item.communityRating, posterURL: item.posterURL,
             backdropURL: item.backdropURL, logoURL: item.logoURL,
+            overview: item.overview, genres: item.genres,
             progressFraction: fraction, isFavorite: item.isFavorite, isWatched: item.isWatched
         )
     }
@@ -215,6 +234,7 @@ public enum SampleData {
             runtimeSeconds: item.runtimeSeconds, officialRating: item.officialRating,
             communityRating: item.communityRating, posterURL: item.posterURL,
             backdropURL: item.backdropURL, logoURL: item.logoURL,
+            overview: item.overview, genres: item.genres,
             progressFraction: item.progressFraction, isFavorite: true, isWatched: item.isWatched
         )
     }
@@ -225,8 +245,46 @@ public enum SampleData {
             runtimeSeconds: item.runtimeSeconds, officialRating: item.officialRating,
             communityRating: item.communityRating, posterURL: item.posterURL,
             backdropURL: item.backdropURL, logoURL: item.logoURL,
+            overview: item.overview, genres: item.genres,
             progressFraction: item.progressFraction, isFavorite: item.isFavorite, isWatched: true
         )
+    }
+
+    private static let overviewBank: [String] = [
+        "8000年ぶりに動き出した歯車が、ある夜、ひとりの少女と少年の運命を交差させる。過去と現在、電子と現実、その境界で語られる、忘れられない物語。",
+        "眠らない街のはずれ、月が沈む時間だけに開くカフェ。訪れる者たちが抱える秘密が、湯気の向こうでゆっくりと解けていく。",
+        "静かな海辺の町を舞台に、失われた記憶と、それでもなお残り続ける温度を描く、静かで確かな喪失のドラマ。",
+        "仮想空間ツクヨミの深部で起こった小さな異変。それは、遠い星から届いたひとつの信号がきっかけだった。",
+        "誰にも言えなかった夏の日の約束。10年越しに交差する4人の視点で紡がれる、群像青春譚。"
+    ]
+
+    private static let movieGenreBank: [[String]] = [
+        ["ドラマ", "ロマンス"],
+        ["SF", "ミステリー"],
+        ["アクション", "スリラー"],
+        ["ヒューマン", "ドキュメンタリー"],
+        ["ファンタジー", "冒険"]
+    ]
+
+    private static let seriesGenreBank: [[String]] = [
+        ["ドラマ", "コメディ"],
+        ["SF", "ミステリー"],
+        ["リアリティ", "バラエティ"],
+        ["アニメ", "ファンタジー"]
+    ]
+
+    private static func stableIndex(_ seed: String, modulo: Int) -> Int {
+        let sum = seed.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        return abs(sum) % modulo
+    }
+
+    private static func sampleOverview(seed: String) -> String {
+        overviewBank[stableIndex(seed, modulo: overviewBank.count)]
+    }
+
+    private static func sampleGenres(seed: String, kind: MediaKind) -> [String] {
+        let bank = kind == .movie ? movieGenreBank : seriesGenreBank
+        return bank[stableIndex(seed, modulo: bank.count)]
     }
 
     private static func poster(seed: String, width: Int, height: Int) -> URL {

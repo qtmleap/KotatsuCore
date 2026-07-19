@@ -29,6 +29,22 @@ public struct Episode: Sendable, Codable, Identifiable, Hashable {
     public let runtimeSeconds: Int?
     public let thumbnailURL: URL?
     public let progressFraction: Double?
+    /// Saved playback position from Jellyfin's `PlaybackPositionTicks`.
+    /// Non-nil means the user paused midway through — use for "続きから再生".
+    public let playbackPositionSeconds: TimeInterval?
+    /// Distribution source parsed from the filename — same convention as
+    /// `MediaItem.distributionSource`. A single title's episodes can carry
+    /// different sources (Prime Video / Hulu / Crunchyroll for the same
+    /// episode number) and Jellyfin returns them as separate `Episode`s.
+    public let distributionSource: MediaSource?
+    /// Release variant parsed from the folder name after the `[XX]` tag —
+    /// e.g. `"FLCL Alternative"` for `[AP] FLCL Alternative/S01E01.mkv`.
+    /// Distinguishes alternate editions Jellyfin groups under one series
+    /// item; nil when the show has a single edition.
+    public let releaseVariant: String?
+    /// Primary media source — video codec, resolution, audio tracks. Present
+    /// when the shelf request included `Fields=MediaSources,MediaStreams`.
+    public let primarySource: MediaSourceInfo?
     public let isWatched: Bool
 
     public init(
@@ -42,6 +58,10 @@ public struct Episode: Sendable, Codable, Identifiable, Hashable {
         runtimeSeconds: Int? = nil,
         thumbnailURL: URL? = nil,
         progressFraction: Double? = nil,
+        playbackPositionSeconds: TimeInterval? = nil,
+        distributionSource: MediaSource? = nil,
+        releaseVariant: String? = nil,
+        primarySource: MediaSourceInfo? = nil,
         isWatched: Bool = false
     ) {
         self.id = id
@@ -54,6 +74,10 @@ public struct Episode: Sendable, Codable, Identifiable, Hashable {
         self.runtimeSeconds = runtimeSeconds
         self.thumbnailURL = thumbnailURL
         self.progressFraction = progressFraction
+        self.playbackPositionSeconds = playbackPositionSeconds
+        self.distributionSource = distributionSource
+        self.releaseVariant = releaseVariant
+        self.primarySource = primarySource
         self.isWatched = isWatched
     }
 }

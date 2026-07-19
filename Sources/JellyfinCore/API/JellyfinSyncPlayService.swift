@@ -40,16 +40,12 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     // MARK: - Group management
 
     public func availableGroups() async throws -> [SyncPlayGroup] {
-        let groups: [SyncPlayGroupInfoDTO] = try await http.request(.get, path: "/SyncPlay/List")
+        let groups = try await http.send(SyncPlayListRequest())
         return groups.map { $0.toDomain() }
     }
 
     public func createGroup(name: String) async throws -> SyncPlayGroup {
-        try await http.send(
-            .post,
-            path: "/SyncPlay/New",
-            query: ["GroupName": name]
-        )
+        _ = try await http.send(SyncPlayNewGroupRequest(groupName: name))
         // The server does not return the group ID directly; fetch the
         // current list and pick the one that matches our name (Jellyfin
         // enforces unique names within a session).
@@ -62,11 +58,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     }
 
     public func joinGroup(id: String) async throws {
-        try await http.send(
-            .post,
-            path: "/SyncPlay/Join",
-            query: ["GroupId": id]
-        )
+        _ = try await http.send(SyncPlayJoinRequest(groupId: id))
         let groups = try await availableGroups()
         if let group = groups.first(where: { $0.id == id }) {
             _currentGroup = group
@@ -76,7 +68,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     }
 
     public func leaveGroup() async throws {
-        try await http.send(.post, path: "/SyncPlay/Leave")
+        _ = try await http.send(SyncPlayLeaveRequest())
         _currentGroup = nil
         eventContinuation.yield(.disconnected)
     }
@@ -85,12 +77,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func requestPlay(positionSeconds: TimeInterval) async {
         do {
-            try await http.send(.post, path: "/SyncPlay/Unpause")
-            try await http.send(
-                .post,
-                path: "/SyncPlay/Seek",
-                query: ["PositionTicks": "\(Int64(positionSeconds * 10_000_000))"]
-            )
+            _ = try await http.send(SyncPlayUnpauseRequest())
+            _ = try await http.send(SyncPlaySeekRequest(positionTicks: Int64(positionSeconds * 10_000_000)))
         } catch {
             logger.warning("requestPlay failed: \(String(describing: error), privacy: .public)")
         }
@@ -98,7 +86,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func requestPause(positionSeconds: TimeInterval) async {
         do {
-            try await http.send(.post, path: "/SyncPlay/Pause")
+            _ = try await http.send(SyncPlayPauseRequest())
         } catch {
             logger.warning("requestPause failed: \(String(describing: error), privacy: .public)")
         }
@@ -106,11 +94,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func requestSeek(positionSeconds: TimeInterval) async {
         do {
-            try await http.send(
-                .post,
-                path: "/SyncPlay/Seek",
-                query: ["PositionTicks": "\(Int64(positionSeconds * 10_000_000))"]
-            )
+            _ = try await http.send(SyncPlaySeekRequest(positionTicks: Int64(positionSeconds * 10_000_000)))
         } catch {
             logger.warning("requestSeek failed: \(String(describing: error), privacy: .public)")
         }

@@ -84,18 +84,43 @@ public struct UserDTO: Codable, Sendable {
             name: name,
             serverId: serverId ?? server.id,
             primaryImageURL: imageURL,
-            hasParentalControls: policy?.isParentalScheduleAllowed ?? false
+            hasParentalControls: policy?.hasParentalControls ?? false
         )
     }
 }
 
+/// Subset of `UserPolicy` from the OpenAPI spec. The removed
+/// `IsParentalScheduleAllowed` field does **not** exist in Jellyfin 10.x —
+/// the actual parental knobs are `MaxParentalRating` and `AccessSchedules`.
 public struct UserPolicyDTO: Codable, Sendable {
     public let isAdministrator: Bool?
-    public let isParentalScheduleAllowed: Bool?
+    public let maxParentalRating: Int?
+    public let accessSchedules: [AccessScheduleDTO]?
 
     private enum CodingKeys: String, CodingKey {
         case isAdministrator = "IsAdministrator"
-        case isParentalScheduleAllowed = "IsParentalScheduleAllowed"
+        case maxParentalRating = "MaxParentalRating"
+        case accessSchedules = "AccessSchedules"
+    }
+
+    /// A user is considered "parental-controlled" when the admin has set
+    /// either an age-rating cap or a time-of-day access schedule.
+    var hasParentalControls: Bool {
+        (maxParentalRating != nil) || !(accessSchedules ?? []).isEmpty
+    }
+}
+
+/// Time-of-day access restriction attached to a user policy. We decode only
+/// what we need to detect that a schedule exists.
+public struct AccessScheduleDTO: Codable, Sendable {
+    public let dayOfWeek: String?
+    public let startHour: Double?
+    public let endHour: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case dayOfWeek = "DayOfWeek"
+        case startHour = "StartHour"
+        case endHour = "EndHour"
     }
 }
 

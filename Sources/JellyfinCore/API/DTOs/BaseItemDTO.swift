@@ -14,8 +14,15 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
     public let officialRating: String?
     public let communityRating: Double?
     public let overview: String?
-    public let tagline: String?
+    /// Jellyfin returns a **plural** `Taglines: [String]` array — the legacy
+    /// singular `Tagline` field does not exist in 10.x. Convenience accessor
+    /// `tagline` returns the first element for the common "one tagline" case.
+    public let taglines: [String]?
     public let genres: [String]?
+    /// Server-side filesystem path — used to sniff distribution-source tags
+    /// like `[AP]` (Prime Video), `[BD]` (Blu-ray) that live in the file
+    /// name. Requires `Fields=Path` on the shelf request.
+    public let path: String?
     public let userData: UserItemDataDTO?
 
     // Image tags — the key is the image kind ("Primary", "Backdrop", "Logo", "Thumb").
@@ -23,6 +30,14 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
     public let backdropImageTags: [String]?
     public let parentBackdropItemId: String?
     public let parentBackdropImageTags: [String]?
+    /// Reference to the parent series's Primary (portrait poster) — set on
+    /// episode payloads. Lets us render "series poster on a Continue Watching
+    /// episode tile" without a second lookup.
+    public let seriesPrimaryImageTag: String?
+    /// Reference to the parent series's Logo — set on episode payloads. Used
+    /// so an episode tile can display the series's title logo overlay.
+    public let parentLogoItemId: String?
+    public let parentLogoImageTag: String?
     public let seriesId: String?
     public let seriesName: String?
     public let seasonId: String?
@@ -30,8 +45,20 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
     public let indexNumber: Int?
     public let parentIndexNumber: Int?
     public let childCount: Int?
+    /// Total nested item count for containers. On a `Series` this is the
+    /// grand total of episodes across all seasons — `ChildCount` on the same
+    /// object is only the number of *seasons*.
+    public let recursiveItemCount: Int?
 
     public let mediaSources: [MediaSourceDTO]?
+
+    /// Nested `{mediaSourceId: {widthAsString: {tile grid metadata}}}`. Empty
+    /// dict when the server hasn't generated trickplay for this item; nil
+    /// when the request didn't include `Trickplay` in Fields.
+    // Wire-format representation of `Trickplay: { {msid}: { {width}: {...} } }`.
+    // Kept internal because the mapping type is internal — callers should go
+    // through `preferredTrickplay()` and receive the domain model.
+    let trickplay: [String: [String: TrickplayInfoDTO]]?
 
     private enum CodingKeys: String, CodingKey {
         case id = "Id"
@@ -44,13 +71,17 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
         case officialRating = "OfficialRating"
         case communityRating = "CommunityRating"
         case overview = "Overview"
-        case tagline = "Tagline"
+        case taglines = "Taglines"
         case genres = "Genres"
+        case path = "Path"
         case userData = "UserData"
         case imageTags = "ImageTags"
         case backdropImageTags = "BackdropImageTags"
         case parentBackdropItemId = "ParentBackdropItemId"
         case parentBackdropImageTags = "ParentBackdropImageTags"
+        case seriesPrimaryImageTag = "SeriesPrimaryImageTag"
+        case parentLogoItemId = "ParentLogoItemId"
+        case parentLogoImageTag = "ParentLogoImageTag"
         case seriesId = "SeriesId"
         case seriesName = "SeriesName"
         case seasonId = "SeasonId"
@@ -58,7 +89,9 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
         case indexNumber = "IndexNumber"
         case parentIndexNumber = "ParentIndexNumber"
         case childCount = "ChildCount"
+        case recursiveItemCount = "RecursiveItemCount"
         case mediaSources = "MediaSources"
+        case trickplay = "Trickplay"
     }
 
     public var mediaKind: MediaKind? {
@@ -91,10 +124,17 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
         } else {
             itemForImage = id
         }
+        return Self.makeImageURL(itemId: itemForImage, kind: kind, tag: tag, server: server, maxWidth: maxWidth)
+    }
+
+    /// Builds an `/Items/{id}/Images/{kind}` URL for an arbitrary
+    /// (itemId, kind, tag) triplet — used for parent-series image fallbacks
+    /// where the "owner" of the artwork is a different item than `self`.
+    private static func makeImageURL(itemId: String, kind: String, tag: String, server: Server, maxWidth: Int?) -> URL? {
         var comps = URLComponents(url: server.url, resolvingAgainstBaseURL: false)!
         var basePath = server.url.path
         if basePath.hasSuffix("/") { basePath.removeLast() }
-        let suffix = kind == "Backdrop" ? "/Items/\(itemForImage)/Images/Backdrop/0" : "/Items/\(itemForImage)/Images/\(kind)"
+        let suffix = kind == "Backdrop" ? "/Items/\(itemId)/Images/Backdrop/0" : "/Items/\(itemId)/Images/\(kind)"
         comps.path = basePath + suffix
         var query: [URLQueryItem] = [
             URLQueryItem(name: "tag", value: tag),
@@ -107,8 +147,84 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
         return comps.url
     }
 
+    /// URL for the *parent series's* Primary (portrait poster). Populated
+    /// on episode payloads via `SeriesPrimaryImageTag` + `SeriesId`; nil for
+    /// items that aren't episodes or that lack the parent reference.
+    public func seriesPrimaryImageURL(server: Server, maxWidth: Int? = nil) -> URL? {
+        guard let sid = seriesId, let tag = seriesPrimaryImageTag, !tag.isEmpty else { return nil }
+        return Self.makeImageURL(itemId: sid, kind: "Primary", tag: tag, server: server, maxWidth: maxWidth)
+    }
+
+    /// URL for the parent series's Logo — set on episodes so an episode
+    /// tile can display the show's title logo overlay.
+    public func parentLogoImageURL(server: Server, maxWidth: Int? = nil) -> URL? {
+        guard let pid = parentLogoItemId, let tag = parentLogoImageTag, !tag.isEmpty else { return nil }
+        return Self.makeImageURL(itemId: pid, kind: "Logo", tag: tag, server: server, maxWidth: maxWidth)
+    }
+
+    /// Selects the smallest (typically 320) trickplay variant across the
+    /// primary media source and maps to the domain model. Nil when the item
+    /// has no generated trickplay tiles.
+    public func preferredTrickplay() -> MediaTrickplayInfo? {
+        guard let byMSID = trickplay, !byMSID.isEmpty else { return nil }
+        // Prefer the media source whose ID matches the primary MediaSourceDTO;
+        // else take whatever the server sent first.
+        let primaryMSID = mediaSources?.first?.id
+        let (msid, byWidth): (String, [String: TrickplayInfoDTO]) = {
+            if let primaryMSID, let b = byMSID[primaryMSID] { return (primaryMSID, b) }
+            return byMSID.first!
+        }()
+        guard !byWidth.isEmpty else { return nil }
+        // Pick the smallest available width — 320 is the usual server default
+        // and is plenty for a card-sized thumbnail.
+        let widths = byWidth.keys.compactMap { Int($0) }.sorted()
+        guard let w = widths.first, let dto = byWidth[String(w)] else { return nil }
+        return MediaTrickplayInfo(
+            mediaSourceId: msid,
+            width: dto.width,
+            height: dto.height,
+            tileWidth: dto.tileWidth,
+            tileHeight: dto.tileHeight,
+            tileCount: dto.thumbnailCount,
+            intervalMs: dto.interval
+        )
+    }
+
+    /// Base directory for trickplay tile sprites. Append `/{tileIndex}.jpg`
+    /// to fetch a specific tile. Jellyfin routes trickplay under the item ID
+    /// (not the media source ID) — media source ID would only matter when a
+    /// server has multiple sources for the same item; for the shelf we hand
+    /// off the smallest variant and don't disambiguate.
+    public func trickplayTileBaseURL(info: MediaTrickplayInfo, server: Server) -> URL? {
+        var comps = URLComponents(url: server.url, resolvingAgainstBaseURL: false)!
+        var basePath = server.url.path
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        comps.path = basePath + "/Videos/\(id)/Trickplay/\(info.width)"
+        return comps.url
+    }
+
     public func toMediaItem(server: Server) -> MediaItem {
         let kind = mediaKind ?? .movie
+        let tp = preferredTrickplay()
+        let tpBase = tp.flatMap { trickplayTileBaseURL(info: $0, server: server) }
+        // Episodes: prefer the parent series's Primary (portrait poster) so
+        // Continue Watching / Next Up rows read as "the show", not "the
+        // one episode". Falls back to the item's own Primary for movies,
+        // series themselves, and edge cases where the parent tag is absent.
+        let poster = seriesPrimaryImageURL(server: server, maxWidth: 600)
+            ?? imageURL(kind: "Primary", server: server, maxWidth: 600)
+        // Same idea for the title logo — series-parent first, own next.
+        let logo = imageURL(kind: "Logo", server: server, maxWidth: 800)
+            ?? parentLogoImageURL(server: server, maxWidth: 800)
+        // Episode still frame: for episode payloads Jellyfin stores the
+        // screencap as the item's own Primary. `Thumb` is the landscape
+        // still on movie/series items when the server provides one.
+        let thumb: URL?
+        if kind == .episode {
+            thumb = imageURL(kind: "Primary", server: server, maxWidth: 800)
+        } else {
+            thumb = imageURL(kind: "Thumb", server: server, maxWidth: 800)
+        }
         return MediaItem(
             id: id,
             kind: kind,
@@ -117,12 +233,22 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
             runtimeSeconds: runtimeSeconds,
             officialRating: officialRating,
             communityRating: communityRating,
-            posterURL: imageURL(kind: "Primary", server: server, maxWidth: 600),
+            posterURL: poster,
             backdropURL: imageURL(kind: "Backdrop", server: server, maxWidth: 1920),
-            logoURL: imageURL(kind: "Logo", server: server, maxWidth: 800),
+            logoURL: logo,
+            thumbURL: thumb,
+            seriesId: seriesId,
+            episodeNumber: kind == .episode ? indexNumber : nil,
+            seasonNumber: kind == .episode ? parentIndexNumber : nil,
+            overview: overview,
+            genres: genres ?? [],
+            distributionSource: path.flatMap { MediaSource.detect(fromPath: $0) },
             progressFraction: userData?.playedPercentageFraction,
+            playbackPositionSeconds: userData?.playbackPositionSeconds,
             isFavorite: userData?.isFavorite ?? false,
-            isWatched: userData?.played ?? false
+            isWatched: userData?.played ?? false,
+            trickplay: tp,
+            trickplayTileBaseURL: tpBase
         )
     }
 
@@ -131,8 +257,9 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
             item: toMediaItem(server: server),
             overview: overview,
             genres: genres ?? [],
-            tagline: tagline,
-            mediaSources: (mediaSources ?? []).map { $0.toDomain() }
+            tagline: taglines?.first,
+            mediaSources: (mediaSources ?? []).map { $0.toDomain() },
+            episodeCount: recursiveItemCount
         )
     }
 
@@ -149,6 +276,13 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
             thumbnailURL: imageURL(kind: "Primary", server: server, maxWidth: 480)
                 ?? imageURL(kind: "Thumb", server: server, maxWidth: 480),
             progressFraction: userData?.playedPercentageFraction,
+            playbackPositionSeconds: userData?.playbackPositionSeconds,
+            distributionSource: path.flatMap { MediaSource.detect(fromPath: $0) },
+            releaseVariant: {
+                guard let p = path, let s = MediaSource.detect(fromPath: p) else { return nil }
+                return MediaSource.detectVariant(fromPath: p, source: s)
+            }(),
+            primarySource: mediaSources?.first?.toDomain(),
             isWatched: userData?.played ?? false
         )
     }
@@ -183,6 +317,13 @@ public struct UserItemDataDTO: Codable, Sendable, Hashable {
     public var playedPercentageFraction: Double? {
         if let p = playedPercentage { return max(0, min(1, p / 100)) }
         return nil
+    }
+
+    /// Convert Jellyfin's tick-based position into seconds. Nil / zero maps
+    /// to nil so the caller can treat "no saved position" identically.
+    public var playbackPositionSeconds: TimeInterval? {
+        guard let ticks = playbackPositionTicks, ticks > 0 else { return nil }
+        return TimeInterval(ticks) / 10_000_000
     }
 }
 
@@ -240,7 +381,15 @@ public struct MediaSourceDTO: Codable, Sendable, Hashable {
             height: video?.height,
             videoBitrate: video?.bitRate ?? bitrate,
             audioTracks: audioStreams.map { $0.toAudio() },
-            subtitleTracks: subtitleStreams.map { $0.toSubtitle() }
+            subtitleTracks: subtitleStreams.map { $0.toSubtitle() },
+            videoRange: video?.videoRange,
+            videoRangeType: video?.videoRangeType,
+            bitDepth: video?.bitDepth,
+            colorSpace: video?.colorSpace,
+            pixelFormat: video?.pixelFormat,
+            frameRate: video?.averageFrameRate,
+            videoLevel: video?.level,
+            fileSize: size
         )
     }
 }
@@ -262,6 +411,27 @@ public struct MediaStreamDTO: Codable, Sendable, Hashable {
     public let isExternal: Bool?
     public let isTextSubtitleStream: Bool?
 
+    // Colour / HDR / bit-depth. `videoRangeType` is the canonical HDR marker
+    // Jellyfin computes server-side ("SDR" / "HDR10" / "HLG" / "DOVI" / …).
+    public let colorRange: String?
+    public let colorSpace: String?
+    public let colorTransfer: String?
+    public let colorPrimaries: String?
+    public let bitDepth: Int?
+    public let pixelFormat: String?
+    public let videoRange: String?
+    public let videoRangeType: String?
+    public let level: Double?
+
+    // Frame rate. `averageFrameRate` is the media's declared average; the
+    // realtime and reference numbers exist for progressive / interlaced
+    // adjustment but the average is what UI wants.
+    public let averageFrameRate: Double?
+
+    // Audio spatial ("None" / "DolbyAtmos" / "DTSX" / …). Non-"None" is what
+    // signals Atmos-style playback in the UI.
+    public let audioSpatialFormat: String?
+
     private enum CodingKeys: String, CodingKey {
         case index = "Index"
         case type = "Type"
@@ -278,6 +448,17 @@ public struct MediaStreamDTO: Codable, Sendable, Hashable {
         case isForced = "IsForced"
         case isExternal = "IsExternal"
         case isTextSubtitleStream = "IsTextSubtitleStream"
+        case colorRange = "ColorRange"
+        case colorSpace = "ColorSpace"
+        case colorTransfer = "ColorTransfer"
+        case colorPrimaries = "ColorPrimaries"
+        case bitDepth = "BitDepth"
+        case pixelFormat = "PixelFormat"
+        case videoRange = "VideoRange"
+        case videoRangeType = "VideoRangeType"
+        case level = "Level"
+        case averageFrameRate = "AverageFrameRate"
+        case audioSpatialFormat = "AudioSpatialFormat"
     }
 
     func toAudio() -> AudioTrackDescriptor {
@@ -286,7 +467,8 @@ public struct MediaStreamDTO: Codable, Sendable, Hashable {
             language: language,
             codec: codec,
             channels: channels,
-            displayTitle: displayTitle ?? title ?? (codec ?? "Audio")
+            displayTitle: displayTitle ?? title ?? (codec ?? "Audio"),
+            spatialFormat: (audioSpatialFormat?.lowercased() == "none" ? nil : audioSpatialFormat)
         )
     }
 

@@ -9,6 +9,11 @@ public protocol AuthService: Sendable {
     func switchUser(id: String) async throws
     func signOut(userId: String) async throws
     func addUser(_ user: UserProfile, server: Server, accessToken: String) async throws
+    /// Returns the stored access token for a previously-added user, or `nil`
+    /// if we don't have credentials for them (signed out, corrupted keychain).
+    /// Callers use this to rebuild `ServiceContainer.real(...)` when switching
+    /// profiles or re-hydrating after launch.
+    func accessToken(for userId: String) async -> String?
 }
 
 public struct StoredUser: Sendable, Codable, Identifiable, Hashable {

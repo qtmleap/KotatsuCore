@@ -8,6 +8,9 @@ public protocol MediaService: Sendable {
     func fetchLatestSeries() async throws -> [MediaItem]
     func fetchFavorites() async throws -> [MediaItem]
     func fetchRandomForRewatch() async throws -> [MediaItem]
+    /// Random items with **no** played-state filter — useful for fresh
+    /// accounts where Continue Watching / Rewatch shelves would be empty.
+    func fetchRandomSuggestions() async throws -> [MediaItem]
 
     func fetchDetail(id: String) async throws -> MediaDetail
     func fetchSeasons(seriesId: String) async throws -> [Season]
