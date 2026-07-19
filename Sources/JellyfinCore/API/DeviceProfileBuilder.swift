@@ -156,6 +156,47 @@ public struct DeviceProfileBuilder: Sendable {
     public var maxStreamingBitrate: Int { generation.maxStreamingBitrate }
     public var maxResolutionWidth: Int { generation.maxResolutionWidth }
 
+    // MARK: - Public capability views
+
+    /// Video codecs this client will Direct Play without asking the server
+    /// to transcode. HEVC is added only when the machine ID + the runtime
+    /// VideoToolbox check both confirm hardware decode.
+    public var directPlayVideoCodecs: [String] {
+        var out = ["h264"]
+        if advertisesHEVC { out.append("hevc") }
+        return out
+    }
+
+    /// Audio codecs paired with the above video codecs.
+    public var directPlayAudioCodecs: [String] {
+        advertisesHEVC
+            ? ["aac", "mp3", "ac3", "eac3", "flac", "alac", "opus"]
+            : ["aac", "mp3", "ac3", "eac3"]
+    }
+
+    /// Containers the client is willing to Direct Play. MKV is only advertised
+    /// on 4K models because the A8 pipeline chokes on MKV muxing quirks.
+    public var directPlayContainers: [String] {
+        advertisesHEVC
+            ? ["mp4", "m4v", "mov", "mkv", "ts"]
+            : ["mp4", "m4v", "mov", "ts"]
+    }
+
+    /// Subtitle formats declared in the DeviceProfile paired with the method
+    /// AVPlayer needs (external sidecar / HLS in-band / server-side burn-in).
+    public var subtitleSupport: [SubtitleProfileDescriptor] {
+        [
+            .init(format: "vtt", method: .external),
+            .init(format: "vtt", method: .hls),
+            .init(format: "srt", method: .external),
+            .init(format: "ass", method: .encode),
+            .init(format: "ssa", method: .encode),
+            .init(format: "pgssub", method: .encode),
+            .init(format: "dvbsub", method: .encode),
+            .init(format: "dvdsub", method: .encode),
+        ]
+    }
+
     // MARK: - Build
 
     public func build() -> [String: Any] {
@@ -375,5 +416,29 @@ public struct DeviceProfileBuilder: Sendable {
             ["Format": "dvbsub", "Method": "Encode"],
             ["Format": "dvdsub", "Method": "Encode"],
         ]
+    }
+}
+
+/// A single row in `DeviceProfileBuilder.subtitleSupport` — the subtitle
+/// format we advertise plus the delivery method AVPlayer needs for it.
+public struct SubtitleProfileDescriptor: Sendable, Hashable {
+    public enum Method: String, Sendable, Hashable {
+        case external = "External"
+        case hls = "Hls"
+        case encode = "Encode"
+
+        public var displayName: String {
+            switch self {
+            case .external: return "外部"
+            case .hls: return "HLS"
+            case .encode: return "焼き込み"
+            }
+        }
+    }
+    public let format: String
+    public let method: Method
+    public init(format: String, method: Method) {
+        self.format = format
+        self.method = method
     }
 }

@@ -43,41 +43,25 @@ public actor JellyfinAuthService: AuthService {
         // whatever the constructor was pointed at, so we swap the server on
         // the shared client for the duration of the Quick Connect flow.
         http.updateServer(server)
-        let result: QuickConnectResultDTO = try await http.request(
-            .post,
-            path: "/QuickConnect/Initiate"
-        )
+        let result = try await http.send(QuickConnectInitiateRequest())
         return result.toDomain()
     }
 
     public func pollQuickConnect(server: Server, session: QuickConnectSession) async throws -> QuickConnectStatus {
         http.updateServer(server)
-        let poll: QuickConnectResultDTO = try await http.request(
-            .get,
-            path: "/QuickConnect/Connect",
-            query: ["Secret": session.secret]
-        )
+        let poll = try await http.send(QuickConnectPollRequest(secret: session.secret))
         if session.expiresAt < Date() {
             return .expired
         }
         guard poll.authenticated == true else { return .pending }
         // Exchange the secret for a real access token.
-        let auth: AuthenticationResultDTO = try await http.request(
-            .post,
-            path: "/Users/AuthenticateWithQuickConnect",
-            body: AuthenticateWithQuickConnectBody(secret: session.secret)
-        )
+        let auth = try await http.send(AuthenticateWithQuickConnectRequest(secret: session.secret))
         guard let userDTO = auth.user else {
             throw JellyfinAPIError.missingField("User")
         }
         let profile = userDTO.toDomain(server: server)
         try await addUser(profile, server: server, accessToken: auth.accessToken)
         return .authenticated(profile, accessToken: auth.accessToken)
-    }
-
-    private struct AuthenticateWithQuickConnectBody: Encodable, Sendable {
-        let secret: String
-        enum CodingKeys: String, CodingKey { case secret = "Secret" }
     }
 
     // MARK: - User store
@@ -102,13 +86,38 @@ public actor JellyfinAuthService: AuthService {
         defaults.set(id, forKey: Self.currentUserKey)
         http.updateServer(user.server)
         http.updateCredentials(accessToken: token, userId: id)
+        // Refresh the profile from the server so a changed avatar / display
+        // name propagates into the stored user list.
+        Task { [weak self] in
+            await self?.refreshCurrentUserProfile()
+        }
+    }
+
+    /// Fetch `/Users/{id}` for the current session and update the stored
+    /// `UserProfile`. Silently ignores transport errors — the cached copy
+    /// is fine if the server is momentarily unreachable.
+    private func refreshCurrentUserProfile() async {
+        guard let userId = http.userId, !userId.isEmpty else { return }
+        do {
+            let dto = try await http.send(GetUserRequest(userId: userId))
+            AppLogger.info("User profile refreshed: name=\(dto.name) primaryImageTag=\(dto.primaryImageTag ?? "<nil>")")
+            let server = http.server
+            let profile = dto.toDomain(server: server)
+            var users = loadStoredUsers()
+            if let idx = users.firstIndex(where: { $0.id == userId }) {
+                users[idx] = StoredUser(profile: profile, server: users[idx].server)
+                saveStoredUsers(users)
+            }
+        } catch {
+            AppLogger.warning("Failed to refresh user profile: \(error)")
+        }
     }
 
     public func signOut(userId: String) async throws {
         // Best effort: tell the server we're going away. Ignore transport
         // errors — signing out locally always succeeds regardless.
         if defaults.string(forKey: Self.currentUserKey) == userId {
-            try? await http.send(.post, path: "/Sessions/Logout")
+            _ = try? await http.send(LogoutRequest())
             defaults.removeObject(forKey: Self.currentUserKey)
             http.updateCredentials(accessToken: nil, userId: nil)
         }
@@ -116,6 +125,10 @@ public actor JellyfinAuthService: AuthService {
         var users = loadStoredUsers()
         users.removeAll { $0.id == userId }
         saveStoredUsers(users)
+    }
+
+    public func accessToken(for userId: String) async -> String? {
+        keychain.string(forKey: tokenKey(userId: userId))
     }
 
     public func addUser(_ user: UserProfile, server: Server, accessToken: String) async throws {

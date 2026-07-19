@@ -58,5 +58,9 @@ public actor MockAuthService: AuthService {
         currentUserId = stored.id
     }
 
+    public func accessToken(for userId: String) async -> String? {
+        users.contains(where: { $0.id == userId }) ? "mock-token-\(userId)" : nil
+    }
+
     enum MockError: Error { case userNotFound }
 }

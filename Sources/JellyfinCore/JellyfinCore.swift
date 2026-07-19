@@ -5,6 +5,7 @@ public struct ServiceContainer: Sendable {
     public let media: any MediaService
     public let playback: any PlaybackService
     public let syncPlay: any SyncPlayService
+    public let system: any SystemService
     public let imageLoader: any ImageLoader
 
     public init(
@@ -12,12 +13,14 @@ public struct ServiceContainer: Sendable {
         media: any MediaService,
         playback: any PlaybackService,
         syncPlay: any SyncPlayService,
+        system: any SystemService,
         imageLoader: any ImageLoader
     ) {
         self.auth = auth
         self.media = media
         self.playback = playback
         self.syncPlay = syncPlay
+        self.system = system
         self.imageLoader = imageLoader
     }
 
@@ -27,6 +30,7 @@ public struct ServiceContainer: Sendable {
             media: MockMediaService(),
             playback: MockPlaybackService(),
             syncPlay: MockSyncPlayService(),
+            system: MockSystemService(),
             imageLoader: MockImageLoader()
         )
     }
@@ -50,7 +54,8 @@ public struct ServiceContainer: Sendable {
             media: JellyfinMediaService(http: http),
             playback: JellyfinPlaybackService(http: http, deviceProfileBuilder: deviceProfileBuilder),
             syncPlay: JellyfinSyncPlayService(http: http),
-            imageLoader: JellyfinImageLoader()
+            system: JellyfinSystemService(http: http),
+            imageLoader: makeImageLoader(http: http)
         )
     }
 
@@ -64,7 +69,21 @@ public struct ServiceContainer: Sendable {
             media: JellyfinMediaService(http: http),
             playback: JellyfinPlaybackService(http: http),
             syncPlay: JellyfinSyncPlayService(http: http),
-            imageLoader: JellyfinImageLoader()
+            system: JellyfinSystemService(http: http),
+            imageLoader: makeImageLoader(http: http)
         )
+    }
+
+    /// Build an `ImageLoader` that automatically attaches the Jellyfin
+    /// `Authorization` header when the requested image URL is on the same
+    /// host as the current server (needed for `/Users/{id}/Images/Primary`,
+    /// which the server refuses to serve anonymously).
+    private static func makeImageLoader(http: JellyfinHTTPClient) -> JellyfinImageLoader {
+        JellyfinImageLoader(authProvider: { [weak http] in
+            guard let http, let host = http.server.url.host, !host.isEmpty else {
+                return nil
+            }
+            return JellyfinImageAuth(host: host, headerValue: http.authorizationHeaderValue)
+        })
     }
 }

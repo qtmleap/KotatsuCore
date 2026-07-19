@@ -35,6 +35,10 @@ public struct MockMediaService: MediaService {
         try await delay(); return SampleData.randomForRewatch
     }
 
+    public func fetchRandomSuggestions() async throws -> [MediaItem] {
+        try await delay(); return SampleData.randomForRewatch
+    }
+
     public func fetchDetail(id: String) async throws -> MediaDetail {
         try await delay()
         let item = (SampleData.movies + SampleData.series).first { $0.id == id } ?? SampleData.movies[0]

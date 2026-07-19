@@ -27,39 +27,24 @@ public struct JellyfinPlaybackService: PlaybackService {
         }
     }
 
-    public func requestPlayback(itemId: String, audioTrackId: Int?, subtitleTrackId: Int?) async throws -> PlaybackSession {
+    public func requestPlayback(
+        itemId: String,
+        audioTrackId: Int?,
+        subtitleTrackId: Int?,
+        startPositionSeconds: TimeInterval
+    ) async throws -> PlaybackSession {
         let uid = try userId
         let profile = deviceProfileBuilder.build()
 
-        var body: [String: Any] = [
-            "DeviceProfile": profile,
-            "UserId": uid,
-            "MaxStreamingBitrate": deviceProfileBuilder.maxStreamingBitrate,
-            "StartTimeTicks": 0,
-            "AutoOpenLiveStream": true,
-            "EnableDirectPlay": true,
-            "EnableDirectStream": true,
-            "EnableTranscoding": true,
-            "AllowVideoStreamCopy": true,
-            "AllowAudioStreamCopy": true
-        ]
-        if let audioTrackId {
-            body["AudioStreamIndex"] = audioTrackId
-        }
-        if let subtitleTrackId {
-            body["SubtitleStreamIndex"] = subtitleTrackId
-        }
-
-        let response: PlaybackInfoResponseDTO = try await http.requestJSON(
-            .post,
-            path: "/Items/\(itemId)/PlaybackInfo",
-            query: [
-                "UserId": uid,
-                "AutoOpenLiveStream": "true",
-                "MaxStreamingBitrate": "\(deviceProfileBuilder.maxStreamingBitrate)"
-            ],
-            jsonBody: body
-        )
+        let response = try await http.send(PlaybackInfoRequest(
+            itemId: itemId,
+            userId: uid,
+            maxStreamingBitrate: deviceProfileBuilder.maxStreamingBitrate,
+            deviceProfile: profile,
+            audioStreamIndex: audioTrackId,
+            subtitleStreamIndex: subtitleTrackId,
+            startPositionTicks: Int64(startPositionSeconds * 10_000_000)
+        ))
 
         guard let source = response.mediaSources?.first else {
             throw JellyfinAPIError.missingField("MediaSources")
@@ -92,7 +77,7 @@ public struct JellyfinPlaybackService: PlaybackService {
             audioTracks: source.audioStreams.map { $0.toAudio() },
             subtitleTracks: source.subtitleStreams.map { $0.toSubtitle() },
             playSessionId: playSessionId,
-            startPositionSeconds: 0
+            startPositionSeconds: startPositionSeconds
         )
     }
 
@@ -155,7 +140,7 @@ public struct JellyfinPlaybackService: PlaybackService {
             positionTicks: Int64(session.startPositionSeconds * 10_000_000)
         )
         do {
-            try await http.send(.post, path: "/Sessions/Playing", body: body)
+            _ = try await http.send(ReportPlaybackStartRequest(payload: body))
         } catch {
             logger.warning("reportStarted failed: \(String(describing: error), privacy: .public)")
         }
@@ -174,7 +159,7 @@ public struct JellyfinPlaybackService: PlaybackService {
             eventName: "TimeUpdate"
         )
         do {
-            try await http.send(.post, path: "/Sessions/Playing/Progress", body: body)
+            _ = try await http.send(ReportPlaybackProgressRequest(payload: body))
         } catch {
             logger.debug("reportProgress failed: \(String(describing: error), privacy: .public)")
         }
@@ -189,7 +174,7 @@ public struct JellyfinPlaybackService: PlaybackService {
             failed: false
         )
         do {
-            try await http.send(.post, path: "/Sessions/Playing/Stopped", body: body)
+            _ = try await http.send(ReportPlaybackStopRequest(payload: body))
         } catch {
             logger.warning("reportStopped failed: \(String(describing: error), privacy: .public)")
         }

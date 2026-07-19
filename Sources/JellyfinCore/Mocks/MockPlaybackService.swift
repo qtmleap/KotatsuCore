@@ -3,7 +3,12 @@ import Foundation
 public struct MockPlaybackService: PlaybackService {
     public init() {}
 
-    public func requestPlayback(itemId: String, audioTrackId: Int?, subtitleTrackId: Int?) async throws -> PlaybackSession {
+    public func requestPlayback(
+        itemId: String,
+        audioTrackId: Int?,
+        subtitleTrackId: Int?,
+        startPositionSeconds: TimeInterval
+    ) async throws -> PlaybackSession {
         try await Task.sleep(for: .milliseconds(600))
         return PlaybackSession(
             id: UUID().uuidString,
@@ -18,7 +23,7 @@ public struct MockPlaybackService: PlaybackService {
                 SubtitleTrackDescriptor(id: 1, language: "jpn", codec: "srt", displayTitle: "日本語")
             ],
             playSessionId: UUID().uuidString,
-            startPositionSeconds: 0
+            startPositionSeconds: startPositionSeconds
         )
     }
 

@@ -1,7 +1,22 @@
 import Foundation
 import CoreGraphics
 import ImageIO
-import os
+
+/// Auth context handed to `JellyfinImageLoader` at construction. Kept minimal
+/// so the loader never captures the whole HTTP client actor.
+public struct JellyfinImageAuth: Sendable {
+    /// Host of the Jellyfin server. The loader only attaches the auth header
+    /// when the requested image URL matches this host — so third-party
+    /// image URLs (e.g. TMDB fallbacks) never leak the token.
+    public let host: String
+    /// The `Authorization: MediaBrowser …` header value.
+    public let headerValue: String
+
+    public init(host: String, headerValue: String) {
+        self.host = host
+        self.headerValue = headerValue
+    }
+}
 
 /// Downsampling image loader. Fetches the raw bytes with `URLSession`, then
 /// asks ImageIO for a thumbnail sized to the caller's requested pixel size.
@@ -13,7 +28,7 @@ public actor JellyfinImageLoader: ImageLoader {
     private var cache: [CacheKey: Data] = [:]
     private var order: [CacheKey] = []
     private let maxEntries: Int
-    private let logger = Logger(subsystem: "app.jellyfin.tvos", category: "image")
+    private let authProvider: (@Sendable () -> JellyfinImageAuth?)?
 
     private struct CacheKey: Hashable {
         let url: URL
@@ -21,9 +36,14 @@ public actor JellyfinImageLoader: ImageLoader {
         let height: Int
     }
 
-    public init(urlSession: URLSession = .shared, maxEntries: Int = 128) {
+    public init(
+        urlSession: URLSession = .shared,
+        maxEntries: Int = 128,
+        authProvider: (@Sendable () -> JellyfinImageAuth?)? = nil
+    ) {
         self.urlSession = urlSession
         self.maxEntries = maxEntries
+        self.authProvider = authProvider
     }
 
     public func loadImageData(from url: URL, targetPixelSize: CGSize) async throws -> Data {
@@ -31,8 +51,15 @@ public actor JellyfinImageLoader: ImageLoader {
         if let cached = cache[key] {
             return cached
         }
-        let (data, response) = try await urlSession.data(from: url)
+
+        var request = URLRequest(url: url)
+        if let auth = authProvider?(), let host = url.host, host == auth.host {
+            request.setValue(auth.headerValue, forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, response) = try await urlSession.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            AppLogger.warning("Image \(http.statusCode) for \(url.absoluteString)")
             throw JellyfinAPIError.fromStatus(http.statusCode, body: nil)
         }
         let processed = downsample(data: data, targetSize: targetPixelSize) ?? data
