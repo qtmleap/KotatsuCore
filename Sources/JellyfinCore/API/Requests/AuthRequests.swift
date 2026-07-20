@@ -41,6 +41,15 @@ struct GetUserRequest: JFRequest {
     var path: String { "/Users/\(userId)" }
 }
 
+/// `GET /Users` — returns every user on the server. Used by SyncPlay to
+/// look up participant avatars: `/SyncPlay/List` only sends usernames, so
+/// we need this directory to translate them into userId + PrimaryImageTag.
+struct GetUsersRequest: JFRequest {
+    typealias Response = [UserDTO]
+    let method: HTTPMethod = .get
+    var path: String { "/Users" }
+}
+
 // MARK: - Session
 
 struct LogoutRequest: JFRequest {

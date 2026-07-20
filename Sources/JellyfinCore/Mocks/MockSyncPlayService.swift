@@ -54,4 +54,26 @@ public actor MockSyncPlayService: SyncPlayService {
     public func requestSeek(positionSeconds: TimeInterval) async {
         eventContinuation.yield(.seek(positionSeconds: positionSeconds))
     }
+
+    public func setNewQueue(itemIds: [String], startPositionSeconds: TimeInterval) async throws {
+        guard let itemId = itemIds.first else { return }
+        eventContinuation.yield(.queueUpdated(
+            itemId: itemId,
+            playlistItemId: "mock-plitem-\(UUID().uuidString.prefix(8))",
+            startPositionSeconds: startPositionSeconds,
+            isPlaying: false
+        ))
+    }
+
+    public func notifyReady(positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?) async {
+        // No-op: the mock doesn't model the server-side ready gate.
+    }
+
+    public func notifyBuffering(positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?) async {
+        // No-op.
+    }
+
+    public func stopGroup() async {
+        eventContinuation.yield(.stop)
+    }
 }

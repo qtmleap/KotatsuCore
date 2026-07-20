@@ -151,6 +151,64 @@ struct RandomSuggestionsRequest: JFRequest {
     }
 }
 
+// MARK: - Genres
+
+/// `/Genres` returns one BaseItemDTO per genre (Type = "Genre", Name = the
+/// genre label). Callers only need the names, so implementations map to
+/// `[String]`.
+struct GenresRequest: JFRequest {
+    typealias Response = BaseItemQueryResultDTO
+    let method: HTTPMethod = .get
+    var path: String { "/Genres" }
+    let userId: String
+    let includeItemTypes: String
+
+    var query: [String: String?] {
+        [
+            "UserId": userId,
+            "IncludeItemTypes": includeItemTypes,
+            "Recursive": "true",
+            "SortBy": "SortName",
+            "SortOrder": "Ascending",
+            "EnableTotalRecordCount": "false"
+        ]
+    }
+}
+
+/// One-genre shelf fetch — `/Items?Genres={name}` filtered to the same
+/// `IncludeItemTypes` used to list the genres. Random sort so the shelf
+/// varies between visits instead of always leading with the same title.
+struct ItemsByGenreRequest: JFRequest {
+    typealias Response = BaseItemQueryResultDTO
+    let method: HTTPMethod = .get
+    let userId: String
+    let genre: String
+    let includeItemTypes: String
+    let limit: Int
+
+    init(userId: String, genre: String, includeItemTypes: String, limit: Int = 20) {
+        self.userId = userId
+        self.genre = genre
+        self.includeItemTypes = includeItemTypes
+        self.limit = limit
+    }
+
+    var path: String { "/Users/\(userId)/Items" }
+    var query: [String: String?] {
+        [
+            "Genres": genre,
+            "IncludeItemTypes": includeItemTypes,
+            "Recursive": "true",
+            "SortBy": "SortName",
+            "SortOrder": "Ascending",
+            "Limit": "\(limit)",
+            "Fields": baseListFields,
+            "ImageTypeLimit": "1",
+            "EnableImageTypes": "Primary,Backdrop,Logo"
+        ]
+    }
+}
+
 // MARK: - Detail
 
 struct ItemDetailRequest: JFRequest {

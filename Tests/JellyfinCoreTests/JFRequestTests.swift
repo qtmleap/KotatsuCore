@@ -332,14 +332,18 @@ final class JFRequestTests: XCTestCase {
         XCTAssertEqual(req.method, .post)
         let u = try url(req)
         XCTAssertEqual(u.path, "/SyncPlay/New")
-        XCTAssertEqual(queryPairs(u)["GroupName"], "Movie Night")
+        XCTAssertTrue(req.query.isEmpty)
+        let obj = try decodeBody(XCTUnwrap(try req.bodyData()))
+        XCTAssertEqual(obj["GroupName"] as? String, "Movie Night")
     }
 
     func testSyncPlayJoin() throws {
         let req = SyncPlayJoinRequest(groupId: "g1")
         let u = try url(req)
         XCTAssertEqual(u.path, "/SyncPlay/Join")
-        XCTAssertEqual(queryPairs(u)["GroupId"], "g1")
+        XCTAssertTrue(req.query.isEmpty)
+        let obj = try decodeBody(XCTUnwrap(try req.bodyData()))
+        XCTAssertEqual(obj["GroupId"] as? String, "g1")
     }
 
     func testSyncPlayLeave() throws {
@@ -358,7 +362,10 @@ final class JFRequestTests: XCTestCase {
         let req = SyncPlaySeekRequest(positionTicks: 123456789)
         let u = try url(req)
         XCTAssertEqual(u.path, "/SyncPlay/Seek")
-        XCTAssertEqual(queryPairs(u)["PositionTicks"], "123456789")
+        XCTAssertTrue(req.query.isEmpty)
+        let obj = try decodeBody(XCTUnwrap(try req.bodyData()))
+        // JSON numbers of int64 range decode as NSNumber; compare via int64Value.
+        XCTAssertEqual((obj["PositionTicks"] as? NSNumber)?.int64Value, 123456789)
     }
 
     // MARK: - System

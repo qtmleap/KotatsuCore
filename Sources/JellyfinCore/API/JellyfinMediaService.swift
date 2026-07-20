@@ -70,6 +70,28 @@ public struct JellyfinMediaService: MediaService {
         return result.items.map { $0.toMediaItem(server: server) }
     }
 
+    // MARK: - Genres
+
+    public func fetchGenres(for kind: MediaKind) async throws -> [String] {
+        let uid = try userId
+        let result = try await http.send(GenresRequest(
+            userId: uid,
+            includeItemTypes: Self.mapKind(kind)
+        ))
+        return result.items.compactMap { $0.name?.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    public func fetchItems(inGenre genre: String, kind: MediaKind) async throws -> [MediaItem] {
+        let uid = try userId
+        let result = try await http.send(ItemsByGenreRequest(
+            userId: uid,
+            genre: genre,
+            includeItemTypes: Self.mapKind(kind)
+        ))
+        return result.items.map { $0.toMediaItem(server: server) }
+    }
+
     // MARK: - Detail / series
 
     public func fetchDetail(id: String) async throws -> MediaDetail {

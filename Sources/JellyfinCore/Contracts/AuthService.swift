@@ -14,6 +14,10 @@ public protocol AuthService: Sendable {
     /// Callers use this to rebuild `ServiceContainer.real(...)` when switching
     /// profiles or re-hydrating after launch.
     func accessToken(for userId: String) async -> String?
+    /// Fetch every user visible on the current server. Used by SyncPlay to
+    /// map participant usernames back to `UserProfile` (needed for avatars,
+    /// since `/SyncPlay/List` only sends usernames).
+    func listServerUsers() async throws -> [UserProfile]
 }
 
 public struct StoredUser: Sendable, Codable, Identifiable, Hashable {
