@@ -9,12 +9,16 @@ struct SyncPlayListRequest: JFRequest {
     var path: String { "/SyncPlay/List" }
 }
 
+/// `/SyncPlay/New` returns the freshly-created `GroupInfoDto` on 200. Some
+/// server builds documented a 204 branch as well, so the response is typed
+/// as an Optional — the service falls back to a `/List` diff when the body
+/// comes back empty.
 struct SyncPlayNewGroupRequest: JFRequest {
-    typealias Response = JFEmptyResponse
+    typealias Response = SyncPlayGroupInfoDTO?
     let method: HTTPMethod = .post
     var path: String { "/SyncPlay/New" }
     let groupName: String
-    var query: [String: String?] { ["GroupName": groupName] }
+    var body: JFBody { .encodable(NewGroupRequestBody(groupName: groupName)) }
 }
 
 struct SyncPlayJoinRequest: JFRequest {
@@ -22,7 +26,7 @@ struct SyncPlayJoinRequest: JFRequest {
     let method: HTTPMethod = .post
     var path: String { "/SyncPlay/Join" }
     let groupId: String
-    var query: [String: String?] { ["GroupId": groupId] }
+    var body: JFBody { .encodable(JoinGroupRequestBody(groupId: groupId)) }
 }
 
 struct SyncPlayLeaveRequest: JFRequest {
@@ -50,5 +54,66 @@ struct SyncPlaySeekRequest: JFRequest {
     let method: HTTPMethod = .post
     var path: String { "/SyncPlay/Seek" }
     let positionTicks: Int64
-    var query: [String: String?] { ["PositionTicks": "\(positionTicks)"] }
+    var body: JFBody { .encodable(SeekRequestBody(positionTicks: positionTicks)) }
+}
+
+struct SyncPlayStopRequest: JFRequest {
+    typealias Response = JFEmptyResponse
+    let method: HTTPMethod = .post
+    var path: String { "/SyncPlay/Stop" }
+}
+
+// MARK: - Playlist management
+
+struct SyncPlaySetNewQueueRequest: JFRequest {
+    typealias Response = JFEmptyResponse
+    let method: HTTPMethod = .post
+    var path: String { "/SyncPlay/SetNewQueue" }
+    let itemIds: [String]
+    let startPositionTicks: Int64
+    var body: JFBody {
+        .encodable(PlayRequestBody(
+            playingQueue: itemIds,
+            playingItemPosition: 0,
+            startPositionTicks: startPositionTicks
+        ))
+    }
+}
+
+// MARK: - Client state reporting
+
+struct SyncPlayReadyRequest: JFRequest {
+    typealias Response = JFEmptyResponse
+    let method: HTTPMethod = .post
+    var path: String { "/SyncPlay/Ready" }
+    let positionTicks: Int64
+    let isPlaying: Bool
+    let playlistItemId: String?
+    let when: Date
+    var body: JFBody {
+        .encodable(ReadyRequestBody(
+            when: when,
+            positionTicks: positionTicks,
+            isPlaying: isPlaying,
+            playlistItemId: playlistItemId
+        ))
+    }
+}
+
+struct SyncPlayBufferingRequest: JFRequest {
+    typealias Response = JFEmptyResponse
+    let method: HTTPMethod = .post
+    var path: String { "/SyncPlay/Buffering" }
+    let positionTicks: Int64
+    let isPlaying: Bool
+    let playlistItemId: String?
+    let when: Date
+    var body: JFBody {
+        .encodable(BufferingRequestBody(
+            when: when,
+            positionTicks: positionTicks,
+            isPlaying: isPlaying,
+            playlistItemId: playlistItemId
+        ))
+    }
 }

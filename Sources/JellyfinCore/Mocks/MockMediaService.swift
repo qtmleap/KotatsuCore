@@ -39,6 +39,19 @@ public struct MockMediaService: MediaService {
         try await delay(); return SampleData.randomForRewatch
     }
 
+    public func fetchGenres(for kind: MediaKind) async throws -> [String] {
+        try await delay()
+        let pool = (kind == .movie ? SampleData.movies : SampleData.series)
+        let uniques = Array(Set(pool.flatMap { $0.genres })).sorted()
+        return uniques
+    }
+
+    public func fetchItems(inGenre genre: String, kind: MediaKind) async throws -> [MediaItem] {
+        try await delay()
+        let pool = kind == .movie ? SampleData.movies : SampleData.series
+        return pool.filter { $0.genres.contains(genre) }
+    }
+
     public func fetchDetail(id: String) async throws -> MediaDetail {
         try await delay()
         let item = (SampleData.movies + SampleData.series).first { $0.id == id } ?? SampleData.movies[0]

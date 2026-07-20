@@ -6,22 +6,19 @@ public struct ServiceContainer: Sendable {
     public let playback: any PlaybackService
     public let syncPlay: any SyncPlayService
     public let system: any SystemService
-    public let imageLoader: any ImageLoader
 
     public init(
         auth: any AuthService,
         media: any MediaService,
         playback: any PlaybackService,
         syncPlay: any SyncPlayService,
-        system: any SystemService,
-        imageLoader: any ImageLoader
+        system: any SystemService
     ) {
         self.auth = auth
         self.media = media
         self.playback = playback
         self.syncPlay = syncPlay
         self.system = system
-        self.imageLoader = imageLoader
     }
 
     public static func mock() -> ServiceContainer {
@@ -30,14 +27,17 @@ public struct ServiceContainer: Sendable {
             media: MockMediaService(),
             playback: MockPlaybackService(),
             syncPlay: MockSyncPlayService(),
-            system: MockSystemService(),
-            imageLoader: MockImageLoader()
+            system: MockSystemService()
         )
     }
 
     /// Real backend wired against a live Jellyfin server. The caller is
     /// expected to have already obtained an `accessToken` (via Quick Connect
     /// or by restoring a keychained user).
+    ///
+    /// As a side effect, applies the current auth context to Kingfisher's
+    /// shared downloader so `/Users/{id}/Images/Primary` and friends are
+    /// fetched with the same `Authorization` header as the API client.
     public static func real(
         server: Server,
         accessToken: String,
@@ -49,13 +49,13 @@ public struct ServiceContainer: Sendable {
             accessToken: accessToken,
             userId: userId
         )
+        configureKingfisher(for: http)
         return ServiceContainer(
             auth: JellyfinAuthService(http: http),
             media: JellyfinMediaService(http: http),
             playback: JellyfinPlaybackService(http: http, deviceProfileBuilder: deviceProfileBuilder),
             syncPlay: JellyfinSyncPlayService(http: http),
-            system: JellyfinSystemService(http: http),
-            imageLoader: makeImageLoader(http: http)
+            system: JellyfinSystemService(http: http)
         )
     }
 
@@ -64,26 +64,24 @@ public struct ServiceContainer: Sendable {
     public static func realDiscovery() -> ServiceContainer {
         let placeholderServer = Server(id: "", name: "", url: URL(string: "about:blank")!)
         let http = JellyfinHTTPClient(server: placeholderServer)
+        // No credentials yet — reset Kingfisher to anonymous mode so a stale
+        // token from a previous session can't slip into fresh requests.
+        JellyfinKingfisher.configure(auth: nil)
         return ServiceContainer(
             auth: JellyfinAuthService(http: http),
             media: JellyfinMediaService(http: http),
             playback: JellyfinPlaybackService(http: http),
             syncPlay: JellyfinSyncPlayService(http: http),
-            system: JellyfinSystemService(http: http),
-            imageLoader: makeImageLoader(http: http)
+            system: JellyfinSystemService(http: http)
         )
     }
 
-    /// Build an `ImageLoader` that automatically attaches the Jellyfin
-    /// `Authorization` header when the requested image URL is on the same
-    /// host as the current server (needed for `/Users/{id}/Images/Primary`,
-    /// which the server refuses to serve anonymously).
-    private static func makeImageLoader(http: JellyfinHTTPClient) -> JellyfinImageLoader {
-        JellyfinImageLoader(authProvider: { [weak http] in
-            guard let http, let host = http.server.url.host, !host.isEmpty else {
-                return nil
-            }
-            return JellyfinImageAuth(host: host, headerValue: http.authorizationHeaderValue)
-        })
+    private static func configureKingfisher(for http: JellyfinHTTPClient) {
+        guard let host = http.server.url.host, !host.isEmpty else {
+            JellyfinKingfisher.configure(auth: nil)
+            return
+        }
+        let auth = JellyfinImageAuth(host: host, headerValue: http.authorizationHeaderValue)
+        JellyfinKingfisher.configure(auth: auth)
     }
 }

@@ -131,6 +131,12 @@ public actor JellyfinAuthService: AuthService {
         keychain.string(forKey: tokenKey(userId: userId))
     }
 
+    public func listServerUsers() async throws -> [UserProfile] {
+        let dtos = try await http.send(GetUsersRequest())
+        let server = http.server
+        return dtos.map { $0.toDomain(server: server) }
+    }
+
     public func addUser(_ user: UserProfile, server: Server, accessToken: String) async throws {
         keychain.setString(accessToken, forKey: tokenKey(userId: user.id))
         var users = loadStoredUsers()

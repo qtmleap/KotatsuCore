@@ -62,5 +62,10 @@ public actor MockAuthService: AuthService {
         users.contains(where: { $0.id == userId }) ? "mock-token-\(userId)" : nil
     }
 
+    public func listServerUsers() async throws -> [UserProfile] {
+        try await Task.sleep(for: .milliseconds(200))
+        return users.map(\.profile)
+    }
+
     enum MockError: Error { case userNotFound }
 }
