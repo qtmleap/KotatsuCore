@@ -249,7 +249,12 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
             officialRating: officialRating,
             communityRating: communityRating,
             posterURL: poster,
-            backdropURL: imageURL(kind: "Backdrop", server: server, maxWidth: 1920),
+            // Hero/Detail backdrops paint into a ~1920pt-wide surface but
+            // Apple TV HD (A8) chokes on decoding a full 1920×1080 JPG
+            // (300–500ms per image). Ask for 1280px source — the extra
+            // upscale is imperceptible at the tvOS 3m viewing distance
+            // and cuts both transfer time and CPU decode noticeably.
+            backdropURL: imageURL(kind: "Backdrop", server: server, maxWidth: 1280),
             logoURL: logo,
             thumbURL: thumb,
             seriesId: seriesId,
