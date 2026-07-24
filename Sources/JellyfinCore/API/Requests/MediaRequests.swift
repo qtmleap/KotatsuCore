@@ -143,6 +143,44 @@ struct LatestItemsRequest: JFRequest {
     }
 }
 
+/// Latest Series via the plain Items endpoint sorted by DateCreated,
+/// instead of `/Users/{id}/Items/Latest?IncludeItemTypes=Series`.
+///
+/// The Latest endpoint applies `GroupItems=true` semantics for Series —
+/// it walks every newly-added episode and rolls them up under their
+/// parent series. On a modestly-sized library that pushed Series Latest
+/// response time to 35–43 seconds while Movies Latest stayed under half
+/// a second (Movies never trigger the group-episodes path).
+///
+/// The plain Items query returns series ordered by their own DateCreated
+/// timestamp — response drops to ~500ms. Trade-off: shelves now reflect
+/// "newly-added shows" rather than "shows with newly-added episodes";
+/// series that only received new episodes won't bubble to the front.
+struct LatestSeriesQueryRequest: JFRequest {
+    typealias Response = BaseItemQueryResultDTO
+    let method: HTTPMethod = .get
+    let userId: String
+    let limit: Int
+
+    init(userId: String, limit: Int = 15) {
+        self.userId = userId
+        self.limit = limit
+    }
+
+    var path: String { "/Users/\(userId)/Items" }
+    var query: [String: String?] {
+        [
+            "SortBy": "DateCreated",
+            "SortOrder": "Descending",
+            "IncludeItemTypes": "Series",
+            "Recursive": "true",
+            "Limit": "\(limit)",
+            "Fields": baseListFields,
+            "EnableImageTypes": "Primary,Backdrop,Logo"
+        ]
+    }
+}
+
 /// Random discovery shelf — same shape as `RandomForRewatchRequest` but
 /// without the `IsPlayed` filter so it works for fresh accounts that
 /// haven't accumulated a watch history yet.
