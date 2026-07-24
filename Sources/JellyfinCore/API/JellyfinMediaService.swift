@@ -48,8 +48,12 @@ public struct JellyfinMediaService: MediaService {
 
     public func fetchLatestSeries() async throws -> [MediaItem] {
         let uid = try userId
-        let items = try await http.send(LatestItemsRequest(userId: uid, includeItemTypes: "Series"))
-        return items.map { $0.toMediaItem(server: server) }
+        // Series Latest is served by a plain Items query sorted by
+        // DateCreated — the /Items/Latest endpoint's group-by-episode
+        // path is ~40s on this library. See `LatestSeriesQueryRequest`
+        // for the trade-off.
+        let result = try await http.send(LatestSeriesQueryRequest(userId: uid))
+        return result.items.map { $0.toMediaItem(server: server) }
     }
 
     public func fetchFavorites() async throws -> [MediaItem] {
