@@ -1,10 +1,21 @@
 import Foundation
 import Alamofire
 
-/// Common `Fields` parameter used across list-style endpoints. Match the
-/// original `JellyfinMediaService.baseListFields` verbatim so migration is
-/// behaviour-preserving.
-private let baseListFields = "PrimaryImageAspectRatio,BasicSyncInfo,MediaSourceCount,Overview,Genres,Taglines,ChildCount,Path,Trickplay"
+/// Common `Fields` parameter used across list-style (shelf) endpoints.
+/// Deliberately narrower than what a Detail view needs. The removed fields
+/// carry a real server cost:
+///  * `ChildCount` counts every episode of every series in the response.
+///    On the Series Latest endpoint this pushed response time from ~400ms
+///    to ~35s on a modestly-sized library — the actual reason TV番組 tab
+///    used to sit on a blank Hero for tens of seconds.
+///  * `MediaSourceCount` walks every media source of every item — again
+///    per-episode on series, same blow-up shape. Shelves don't display
+///    the source count anywhere.
+/// `Trickplay` stays in the shelf payload because hovered shelf tiles
+/// stream trickplay frames as the focus preview animation. Detail views
+/// pull the full field set individually via `fetchDetail`, so nothing on
+/// the detail screen regresses.
+private let baseListFields = "PrimaryImageAspectRatio,BasicSyncInfo,Overview,Genres,Taglines,Path,Trickplay"
 
 // MARK: - Hero / shelves (BaseItemQueryResult)
 
