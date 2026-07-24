@@ -136,15 +136,19 @@ public struct BaseItemDTO: Codable, Sendable, Hashable {
         if basePath.hasSuffix("/") { basePath.removeLast() }
         let suffix = kind == "Backdrop" ? "/Items/\(itemId)/Images/Backdrop/0" : "/Items/\(itemId)/Images/\(kind)"
         comps.path = basePath + suffix
-        // Force JPEG. Without `format`, Jellyfin picks the encoding based on
-        // the source file / server config, and can hand back WebP — which
-        // ImageIO on Apple TV HD (A8) surfaces as `Error -17102 decompressing
-        // image -- possibly corrupt`, leaving the shelf tile blank. JPEG is
-        // universally decodable across every tvOS version we ship for, and
-        // the payload difference vs WebP is negligible at these sizes.
+        // Force an explicit format. Without `format`, Jellyfin picks the
+        // encoding based on source file / server config and can hand back
+        // WebP — which ImageIO on Apple TV HD (A8) surfaces as
+        // `Error -17102 decompressing image -- possibly corrupt`, leaving
+        // the tile blank.
+        //  * Logo needs alpha (title logos are keyed on the artwork) so
+        //    it must stay lossless-with-transparency → PNG.
+        //  * Everything else (Primary poster, Backdrop, Thumb) is opaque
+        //    photography → JPEG, smaller payload, universally decodable.
+        let format = (kind == "Logo") ? "Png" : "Jpg"
         var query: [URLQueryItem] = [
             URLQueryItem(name: "tag", value: tag),
-            URLQueryItem(name: "format", value: "Jpg"),
+            URLQueryItem(name: "format", value: format),
             URLQueryItem(name: "quality", value: "90")
         ]
         if let maxWidth {
