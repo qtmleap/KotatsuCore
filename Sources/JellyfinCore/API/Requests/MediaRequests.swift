@@ -17,6 +17,13 @@ import Alamofire
 /// the detail screen regresses.
 private let baseListFields = "PrimaryImageAspectRatio,BasicSyncInfo,Overview,Genres,Taglines,Path,Trickplay"
 
+/// Fields for Series-shaped shelf requests. Same as `baseListFields`
+/// minus `Trickplay` — Series items are containers, not video sources,
+/// so trickplay tiles never exist at the series level. Asking for them
+/// may still push the server into scanning descendants; drop the field
+/// entirely to test whether that's the cause of Series shelf slowness.
+private let seriesListFields = "PrimaryImageAspectRatio,BasicSyncInfo,Overview,Genres,Taglines,Path"
+
 // MARK: - Hero / shelves (BaseItemQueryResult)
 
 struct HeroFeaturedRequest: JFRequest {
@@ -175,7 +182,7 @@ struct LatestSeriesQueryRequest: JFRequest {
             "IncludeItemTypes": "Series",
             "Recursive": "true",
             "Limit": "\(limit)",
-            "Fields": baseListFields,
+            "Fields": seriesListFields,
             "EnableImageTypes": "Primary,Backdrop,Logo"
         ]
     }
