@@ -21,7 +21,7 @@ public struct JellyfinCredentials: Sendable {
         deviceId: String = DeviceProfileBuilder.persistentDeviceId(),
         deviceName: String = "Apple TV",
         clientName: String = "Jellyfin-tvOS",
-        clientVersion: String = "1.0.0"
+        clientVersion: String = JellyfinCredentials.bundleShortVersion()
     ) {
         self.server = server
         self.accessToken = accessToken
@@ -47,6 +47,24 @@ public struct JellyfinCredentials: Sendable {
             parts.insert("Token=\"\(accessToken)\"", at: 0)
         }
         return "MediaBrowser " + parts.joined(separator: ", ")
+    }
+
+    /// The `User-Agent` value sent on every HTTP request. Format matches
+    /// Jellyfin's other clients ("Jellyfin Web/10.9.5", etc.) but uses the
+    /// tvOS-friendly space-separated form the app project settled on:
+    /// `jellyfin tvOS <version>`.
+    public var userAgent: String {
+        "jellyfin tvOS \(clientVersion)"
+    }
+
+    /// Reads `CFBundleShortVersionString` from the host app's main bundle
+    /// so the version in the UA / Authorization headers tracks whatever
+    /// the app was built at — no need to bump a constant in this package
+    /// every release. Falls back to "1.0.0" when running under contexts
+    /// without a marketing-version Info.plist entry (tests, previews).
+    public static func bundleShortVersion() -> String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+            ?? "1.0.0"
     }
 }
 
@@ -92,6 +110,7 @@ final class JellyfinRequestInterceptor: RequestInterceptor, @unchecked Sendable 
         var request = urlRequest
         let creds = state.credentials
         request.setValue(creds.authorizationHeader, forHTTPHeaderField: "Authorization")
+        request.setValue(creds.userAgent, forHTTPHeaderField: "User-Agent")
         if let token = creds.accessToken, !token.isEmpty {
             request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
         }
@@ -366,7 +385,8 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
     public static func discover(url: URL) async throws -> SystemInfoPublicDTO {
         try await withCheckedThrowingContinuation { continuation in
             let full = url.appendingPathComponent("System/Info/Public")
-            AF.request(full)
+            let ua = "jellyfin tvOS \(JellyfinCredentials.bundleShortVersion())"
+            AF.request(full, headers: ["User-Agent": ua])
                 .validate(statusCode: 200..<300)
                 .responseData(queue: .global(qos: .userInitiated)) { response in
                     switch response.result {
