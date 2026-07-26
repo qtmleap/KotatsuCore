@@ -1,6 +1,6 @@
 import XCTest
 import Alamofire
-@testable import JellyfinCore
+@testable import KotatsuCore
 
 /// Verifies that each `JFRequest` composes the correct method, URL, and body
 /// against the OpenAPI-documented Jellyfin endpoints. Pure unit tests — no

@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "JellyfinCore",
+    name: "KotatsuCore",
     platforms: [
         .tvOS(.v26),
         .iOS(.v26),
@@ -11,8 +11,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "JellyfinCore",
-            targets: ["JellyfinCore"]
+            name: "KotatsuCore",
+            targets: ["KotatsuCore"]
         ),
     ],
     dependencies: [
@@ -22,7 +22,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "JellyfinCore",
+            name: "KotatsuCore",
             dependencies: [
                 .product(name: "Alamofire", package: "Alamofire"),
                 .product(name: "SwiftyBeaver", package: "SwiftyBeaver"),
@@ -30,8 +30,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "JellyfinCoreTests",
-            dependencies: ["JellyfinCore"]
+            name: "KotatsuCoreTests",
+            dependencies: ["KotatsuCore"]
         ),
     ],
     swiftLanguageModes: [.v6]

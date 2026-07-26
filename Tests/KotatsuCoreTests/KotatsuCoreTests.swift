@@ -1,7 +1,7 @@
 import XCTest
-@testable import JellyfinCore
+@testable import KotatsuCore
 
-final class JellyfinCoreTests: XCTestCase {
+final class KotatsuCoreTests: XCTestCase {
     func testMockContainerBuildsSuccessfully() async throws {
         let container = ServiceContainer.mock()
         let users = await container.auth.storedUsers()
