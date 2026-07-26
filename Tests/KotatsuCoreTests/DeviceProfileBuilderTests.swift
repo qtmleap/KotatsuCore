@@ -1,5 +1,5 @@
 import XCTest
-@testable import JellyfinCore
+@testable import KotatsuCore
 
 final class DeviceProfileBuilderTests: XCTestCase {
 
