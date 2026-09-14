@@ -14,13 +14,32 @@ public struct JellyfinCredentials: Sendable {
     public var clientName: String
     public var clientVersion: String
 
+    /// Name reported as `Device=` in the auth header, derived from the running
+    /// hardware. Jellyfin shows it in the dashboard's session list.
+    public static var defaultDeviceName: String {
+        DeviceGenerationDetector.detect().defaultDeviceName
+    }
+
+    /// Name reported as `Client=` in the auth header. Jellyfin keys some of its
+    /// own per-client behaviour off this string and prints it in playback logs,
+    /// so an iPad session must not claim to be the tvOS client.
+    public static var defaultClientName: String {
+        #if os(tvOS)
+        return "Jellyfin-tvOS"
+        #elseif os(iOS)
+        return "Jellyfin-iOS"
+        #else
+        return "Jellyfin"
+        #endif
+    }
+
     public init(
         server: Server,
         accessToken: String? = nil,
         userId: String? = nil,
         deviceId: String = DeviceProfileBuilder.persistentDeviceId(),
-        deviceName: String = "Apple TV",
-        clientName: String = "Jellyfin-tvOS",
+        deviceName: String = JellyfinCredentials.defaultDeviceName,
+        clientName: String = JellyfinCredentials.defaultClientName,
         clientVersion: String = JellyfinCredentials.bundleShortVersion()
     ) {
         self.server = server
@@ -172,8 +191,8 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
         accessToken: String? = nil,
         userId: String? = nil,
         deviceId: String = DeviceProfileBuilder.persistentDeviceId(),
-        deviceName: String = "Apple TV",
-        clientName: String = "Jellyfin-tvOS",
+        deviceName: String = JellyfinCredentials.defaultDeviceName,
+        clientName: String = JellyfinCredentials.defaultClientName,
         clientVersion: String = "1.0.0"
     ) {
         let creds = JellyfinCredentials(
