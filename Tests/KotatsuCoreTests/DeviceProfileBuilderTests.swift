@@ -19,6 +19,30 @@ final class DeviceProfileBuilderTests: XCTestCase {
         XCTAssertEqual(DeviceGenerationDetector.detect(identifier: "Simulator(AppleTV6,2)"), .simulator)
     }
 
+    func testDetectsIPad() {
+        XCTAssertEqual(DeviceGenerationDetector.detect(identifier: "iPad14,3"), .iPad)
+        XCTAssertEqual(DeviceGenerationDetector.detect(identifier: "iPad16,6"), .iPad)
+    }
+
+    func testDetectsIPhone() {
+        XCTAssertEqual(DeviceGenerationDetector.detect(identifier: "iPhone17,1"), .iPhone)
+    }
+
+    /// Regression: iOS identifiers used to fall through to `.unknown`, which
+    /// reports `supportsHEVC == false`. Nothing visibly broke — the server just
+    /// transcoded HEVC to H.264 for a device that decodes it in hardware, and
+    /// capped the result at 1080p / 20 Mbps. Assert the shape of the bug, not
+    /// only the fix, so a future `detect` rewrite cannot quietly restore it.
+    func testIOSIdentifiersDoNotFallThroughToUnknown() {
+        for identifier in ["iPad14,3", "iPhone17,1"] {
+            let generation = DeviceGenerationDetector.detect(identifier: identifier)
+            if case .unknown = generation {
+                XCTFail("\(identifier) fell through to .unknown — HEVC would be disabled")
+            }
+            XCTAssertTrue(generation.supportsHEVC, "\(identifier) must advertise HEVC")
+        }
+    }
+
     // MARK: - Apple TV HD — HEVC MUST NOT appear anywhere
 
     func testAppleTVHDDirectPlayHasNoHEVC() throws {
@@ -109,6 +133,58 @@ final class DeviceProfileBuilderTests: XCTestCase {
         XCTAssertEqual(profile["MaxStreamingBitrate"] as? Int, 80_000_000)
     }
 
+    // MARK: - iPad / iPhone
+
+    func testIPadDirectPlayHasHEVC() throws {
+        let builder = DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true)
+        XCTAssertTrue(builder.advertisesHEVC)
+        let profile = builder.build()
+
+        let directPlay = try XCTUnwrap(profile["DirectPlayProfiles"] as? [[String: Any]])
+        let codecs = directPlay.compactMap { $0["VideoCodec"] as? String }
+        XCTAssertTrue(codecs.contains("hevc"), "iPad decodes HEVC in hardware")
+
+        let codecProfiles = try XCTUnwrap(profile["CodecProfiles"] as? [[String: Any]])
+        let hevc = try XCTUnwrap(codecProfiles.first { ($0["Codec"] as? String) == "hevc" })
+        let conditions = try XCTUnwrap(hevc["Conditions"] as? [[String: Any]])
+        let width = try XCTUnwrap((conditions.first { ($0["Property"] as? String) == "Width" })?["Value"] as? String)
+        XCTAssertEqual(width, "3840")
+    }
+
+    func testIPadBitrateMatchesAppleTV4K() {
+        // The cap doubles as a direct-play gate: dropping it below the Apple TV
+        // figure would transcode high-bitrate files the iPad can play as-is.
+        let iPad = DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true)
+        let tv = DeviceProfileBuilder(generation: .appleTV4K, hardwareHEVC: true)
+        XCTAssertEqual(iPad.maxStreamingBitrate, tv.maxStreamingBitrate)
+        XCTAssertEqual(iPad.maxStreamingBitrate, 80_000_000)
+    }
+
+    func testIPhoneKeepsHEVCButCapsResolution() {
+        let builder = DeviceProfileBuilder(generation: .iPhone, hardwareHEVC: true)
+        XCTAssertTrue(builder.advertisesHEVC)
+        XCTAssertEqual(builder.maxResolutionWidth, 1920)
+        XCTAssertEqual(builder.maxStreamingBitrate, 20_000_000)
+    }
+
+    /// The hardware gate applies on iOS exactly as it does on Apple TV.
+    func testIOSStillHonoursTheHardwareCheck() {
+        XCTAssertFalse(DeviceProfileBuilder(generation: .iPad, hardwareHEVC: false).advertisesHEVC)
+    }
+
+    func testDeviceNameDefaultsPerGeneration() {
+        XCTAssertEqual(DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true).deviceName, "iPad")
+        XCTAssertEqual(DeviceProfileBuilder(generation: .iPhone, hardwareHEVC: true).deviceName, "iPhone")
+        XCTAssertEqual(DeviceProfileBuilder(generation: .appleTV4K, hardwareHEVC: true).deviceName, "Apple TV")
+        // Apple TV HD shares the label so existing sessions are not renamed.
+        XCTAssertEqual(DeviceProfileBuilder(generation: .appleTVHD, hardwareHEVC: false).deviceName, "Apple TV")
+    }
+
+    func testExplicitDeviceNameOverridesTheDefault() {
+        let builder = DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true, deviceName: "Devon の iPad")
+        XCTAssertEqual(builder.deviceName, "Devon の iPad")
+    }
+
     // MARK: - Subtitle profiles
 
     func testSubtitleProfileMethods() throws {
@@ -136,6 +212,15 @@ final class DeviceProfileBuilderTests: XCTestCase {
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(obj["MaxStreamingBitrate"] as? Int, 80_000_000)
         let dp = try XCTUnwrap(obj["DeviceProfile"] as? [String: Any])
-        XCTAssertEqual(dp["Name"] as? String, "Jellyfin tvOS")
+        // Asserted against the builder rather than a literal: the default is
+        // platform-derived ("Jellyfin tvOS" / "Jellyfin iOS"), and this suite
+        // also runs on macOS. What matters is that it reaches the payload.
+        XCTAssertEqual(dp["Name"] as? String, builder.profileName)
+    }
+
+    func testExplicitProfileNameReachesTheProfile() {
+        let builder = DeviceProfileBuilder(
+            generation: .iPad, hardwareHEVC: true, profileName: "Jellyfin iOS")
+        XCTAssertEqual(builder.build()["Name"] as? String, "Jellyfin iOS")
     }
 }
