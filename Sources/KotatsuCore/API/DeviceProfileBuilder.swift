@@ -259,6 +259,11 @@ public struct DeviceProfileBuilder: Sendable {
         ["mp4", "m4v", "mov", "ts"]
     }
 
+    public func supportsDirectPlay(container: String) -> Bool {
+        let containers = container.lowercased().split(separator: ",")
+        return containers.contains { directPlayContainers.contains(String($0)) }
+    }
+
     /// Subtitle formats declared in the DeviceProfile paired with the method
     /// AVPlayer needs (external sidecar / HLS in-band / server-side burn-in).
     public var subtitleSupport: [SubtitleProfileDescriptor] {

@@ -170,6 +170,14 @@ final class DeviceProfileBuilderTests: XCTestCase {
         }
     }
 
+    func testDirectPlayContainerValidationRejectsMatroska() {
+        let builder = DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true)
+        XCTAssertTrue(builder.supportsDirectPlay(container: "mp4"))
+        XCTAssertTrue(builder.supportsDirectPlay(container: "MP4,m4v"))
+        XCTAssertFalse(builder.supportsDirectPlay(container: "mkv"))
+        XCTAssertFalse(builder.supportsDirectPlay(container: "matroska"))
+    }
+
     func testIPadHEVCDirectPlayRemainsAvailableInMP4() throws {
         let profile = DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true).build()
         let directPlay = try XCTUnwrap(profile["DirectPlayProfiles"] as? [[String: Any]])
