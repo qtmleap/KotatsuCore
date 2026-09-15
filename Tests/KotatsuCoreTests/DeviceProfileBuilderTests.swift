@@ -114,7 +114,8 @@ final class DeviceProfileBuilderTests: XCTestCase {
 
         let hevcEntry = try XCTUnwrap(directPlay.first(where: { ($0["VideoCodec"] as? String) == "hevc" }))
         let containers = try XCTUnwrap(hevcEntry["Container"] as? String)
-        XCTAssertTrue(containers.contains("mkv"))
+        XCTAssertTrue(containers.split(separator: ",").contains("mp4"))
+        XCTAssertFalse(containers.split(separator: ",").contains("mkv"))
 
         let codecProfiles = try XCTUnwrap(profile["CodecProfiles"] as? [[String: Any]])
         let hevcCodec = try XCTUnwrap(codecProfiles.first { ($0["Codec"] as? String) == "hevc" })
@@ -149,6 +150,34 @@ final class DeviceProfileBuilderTests: XCTestCase {
         let conditions = try XCTUnwrap(hevc["Conditions"] as? [[String: Any]])
         let width = try XCTUnwrap((conditions.first { ($0["Property"] as? String) == "Width" })?["Value"] as? String)
         XCTAssertEqual(width, "3840")
+    }
+
+    func testDirectPlayProfilesNeverAdvertiseMatroska() throws {
+        for generation in [
+            DeviceGeneration.appleTVHD, .appleTV4K, .iPad, .iPhone, .simulator,
+        ] {
+            let builder = DeviceProfileBuilder(generation: generation, hardwareHEVC: true)
+            XCTAssertFalse(builder.directPlayContainers.contains("mkv"))
+
+            let profile = builder.build()
+            let directPlay = try XCTUnwrap(profile["DirectPlayProfiles"] as? [[String: Any]])
+            for video in directPlay where video["Type"] as? String == "Video" {
+                let containers = try XCTUnwrap(video["Container"] as? String)
+                XCTAssertFalse(
+                    containers.split(separator: ",").contains("mkv"),
+                    "\(generation) must let Jellyfin remux or transcode Matroska")
+            }
+        }
+    }
+
+    func testIPadHEVCDirectPlayRemainsAvailableInMP4() throws {
+        let profile = DeviceProfileBuilder(generation: .iPad, hardwareHEVC: true).build()
+        let directPlay = try XCTUnwrap(profile["DirectPlayProfiles"] as? [[String: Any]])
+        let hevc = try XCTUnwrap(
+            directPlay.first { ($0["VideoCodec"] as? String) == "hevc" })
+        let containers = try XCTUnwrap(hevc["Container"] as? String)
+        XCTAssertTrue(containers.split(separator: ",").contains("mp4"))
+        XCTAssertFalse(containers.split(separator: ",").contains("mkv"))
     }
 
     func testIPadBitrateMatchesAppleTV4K() {

@@ -252,13 +252,11 @@ public struct DeviceProfileBuilder: Sendable {
             : ["aac", "mp3", "ac3", "eac3"]
     }
 
-    /// Containers the client is willing to Direct Play. MKV is withheld from
-    /// the A8 because its pipeline chokes on MKV muxing quirks; every device
-    /// that clears the HEVC gate handles it.
+    /// Containers AVPlayer can consume directly. Matroska is intentionally
+    /// absent even when the device decodes HEVC: AVFoundation supports the
+    /// codec in MP4-family containers, but not the MKV container itself.
     public var directPlayContainers: [String] {
-        advertisesHEVC
-            ? ["mp4", "m4v", "mov", "mkv", "ts"]
-            : ["mp4", "m4v", "mov", "ts"]
+        ["mp4", "m4v", "mov", "ts"]
     }
 
     /// Subtitle formats declared in the DeviceProfile paired with the method
@@ -303,10 +301,10 @@ public struct DeviceProfileBuilder: Sendable {
         var profiles: [[String: Any]] = []
 
         // H.264 / AVC direct play — always supported.
-        let h264Containers = advertisesHEVC ? "mp4,m4v,mov,mkv,ts" : "mp4,m4v,mov,ts"
+        let videoContainers = directPlayContainers.joined(separator: ",")
         profiles.append([
             "Type": "Video",
-            "Container": h264Containers,
+            "Container": videoContainers,
             "VideoCodec": "h264",
             "AudioCodec": "aac,mp3,ac3,eac3"
         ])
@@ -315,7 +313,7 @@ public struct DeviceProfileBuilder: Sendable {
         if advertisesHEVC {
             profiles.append([
                 "Type": "Video",
-                "Container": "mp4,m4v,mov,mkv,ts",
+                "Container": videoContainers,
                 "VideoCodec": "hevc",
                 // FLAC/ALAC/OPUS only on newer OS; AVPlayer handles all of
                 // these since tvOS 11 / iOS 11.
