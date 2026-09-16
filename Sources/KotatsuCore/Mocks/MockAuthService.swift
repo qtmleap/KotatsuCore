@@ -14,6 +14,15 @@ public actor MockAuthService: AuthService {
         return Server(id: "discovered", name: "Mock Jellyfin", url: url, version: "10.10.0-mock")
     }
 
+    public func authenticate(
+        server: Server, username: String, password: String
+    ) async throws -> (user: UserProfile, accessToken: String) {
+        let user = UserProfile(id: username, name: username, serverId: server.id)
+        let token = "mock-token-\(username)"
+        try await addUser(user, server: server, accessToken: token)
+        return (user, token)
+    }
+
     public func initiateQuickConnect(server: Server) async throws -> QuickConnectSession {
         try await Task.sleep(for: .milliseconds(400))
         return QuickConnectSession(

@@ -404,8 +404,17 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
     public static func discover(url: URL) async throws -> SystemInfoPublicDTO {
         try await withCheckedThrowingContinuation { continuation in
             let full = url.appendingPathComponent("System/Info/Public")
-            let ua = "jellyfin tvOS \(JellyfinCredentials.bundleShortVersion())"
-            AF.request(full, headers: ["User-Agent": ua])
+            let credentials = JellyfinCredentials(
+                server: Server(id: "", name: "", url: url),
+                clientVersion: JellyfinCredentials.bundleShortVersion()
+            )
+            AF.request(
+                full,
+                headers: [
+                    "Authorization": credentials.authorizationHeader,
+                    "User-Agent": credentials.userAgent,
+                ]
+            )
                 .validate(statusCode: 200..<300)
                 .responseData(queue: .global(qos: .userInitiated)) { response in
                     switch response.result {
