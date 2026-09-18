@@ -6,6 +6,16 @@ import os
 /// the active session, plus a Keychain-backed store of previously
 /// signed-in users so we can present a Netflix-style profile picker.
 public actor JellyfinAuthService: AuthService {
+    private struct AuthenticateByNameBody: Encodable, Sendable {
+        let username: String
+        let password: String
+
+        private enum CodingKeys: String, CodingKey {
+            case username = "Username"
+            case password = "Pw"
+        }
+    }
+
     private let http: JellyfinHTTPClient
     private let keychain: KeychainStore
     private let defaults: UserDefaults
@@ -34,6 +44,23 @@ public actor JellyfinAuthService: AuthService {
     public func discoverServer(url: URL) async throws -> Server {
         let info = try await JellyfinHTTPClient.discover(url: url)
         return info.toDomain(serverURL: url)
+    }
+
+    // MARK: - Authentication
+
+    public func authenticate(
+        server: Server, username: String, password: String
+    ) async throws -> (user: UserProfile, accessToken: String) {
+        http.updateServer(server)
+        let result: AuthenticationResultDTO = try await http.request(
+            .post,
+            path: "/Users/AuthenticateByName",
+            body: AuthenticateByNameBody(username: username, password: password)
+        )
+        guard let user = result.user else {
+            throw JellyfinAPIError.missingField("User")
+        }
+        return (user.toDomain(server: server), result.accessToken)
     }
 
     // MARK: - Quick Connect
