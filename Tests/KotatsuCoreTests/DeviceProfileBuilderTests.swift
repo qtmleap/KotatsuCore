@@ -260,4 +260,65 @@ final class DeviceProfileBuilderTests: XCTestCase {
             generation: .iPad, hardwareHEVC: true, profileName: "Jellyfin iOS")
         XCTAssertEqual(builder.build()["Name"] as? String, "Jellyfin iOS")
     }
+
+    // MARK: - TranscodingProfiles — HEVC must never land in MPEG-TS
+
+    /// Regression: the HEVC transcoding profile used to declare
+    /// `Container: "ts"`, so the server remuxed HEVC into MPEG-TS segments.
+    /// Apple's HLS authoring spec requires fragmented MP4 for HEVC, and
+    /// AVFoundation fails silently — audio plays, no frame is ever drawn.
+    /// Since Matroska cannot direct play, nearly every HEVC file in a library
+    /// took that path and looked audio-only.
+    func testTranscodingProfilesNeverPutHEVCInMpegTS() throws {
+        for generation in [
+            DeviceGeneration.appleTVHD, .appleTV4K, .iPad, .iPhone, .simulator,
+        ] {
+            let profile = DeviceProfileBuilder(generation: generation, hardwareHEVC: true).build()
+            let transcoding = try XCTUnwrap(profile["TranscodingProfiles"] as? [[String: Any]])
+            for entry in transcoding where entry["Type"] as? String == "Video" {
+                let container = try XCTUnwrap(entry["Container"] as? String)
+                guard container == "ts" else { continue }
+                let codecs = (entry["VideoCodec"] as? String ?? "").split(separator: ",")
+                XCTAssertFalse(
+                    codecs.contains("hevc"),
+                    "\(generation): HEVC in MPEG-TS plays audio only on Apple platforms")
+                // MPEG-TS cannot carry these either — declaring them makes the
+                // server copy an audio track the segment container drops.
+                let audio = (entry["AudioCodec"] as? String ?? "").split(separator: ",")
+                XCTAssertFalse(audio.contains("flac"), "\(generation): FLAC cannot ride in MPEG-TS")
+                XCTAssertFalse(audio.contains("alac"), "\(generation): ALAC cannot ride in MPEG-TS")
+            }
+        }
+    }
+
+    /// HEVC-capable devices must still be offered an HEVC remux target —
+    /// dropping it entirely would transcode every HEVC file to H.264. The
+    /// fMP4 profile also has to come first, because Jellyfin walks the list
+    /// in order and the MPEG-TS fallback would otherwise win.
+    func testHEVCCapableDevicesGetFragmentedMP4First() throws {
+        for generation in [DeviceGeneration.appleTV4K, .iPad, .iPhone] {
+            let profile = DeviceProfileBuilder(generation: generation, hardwareHEVC: true).build()
+            let transcoding = try XCTUnwrap(profile["TranscodingProfiles"] as? [[String: Any]])
+            let video = transcoding.filter { $0["Type"] as? String == "Video" }
+            let first = try XCTUnwrap(video.first)
+            XCTAssertEqual(first["Container"] as? String, "mp4", "\(generation)")
+            XCTAssertEqual(first["Protocol"] as? String, "hls", "\(generation)")
+            let codecs = (first["VideoCodec"] as? String ?? "").split(separator: ",")
+            XCTAssertTrue(codecs.contains("hevc"), "\(generation) decodes HEVC in hardware")
+            XCTAssertTrue(codecs.contains("h264"), "\(generation) still needs an H.264 target")
+        }
+    }
+
+    /// Apple TV HD has no HEVC decoder, so its fMP4 profile must stay H.264 —
+    /// the container fix must not smuggle HEVC in through the new profile.
+    func testAppleTVHDTranscodingProfilesHaveNoHEVC() throws {
+        let profile = DeviceProfileBuilder(generation: .appleTVHD, hardwareHEVC: false).build()
+        let transcoding = try XCTUnwrap(profile["TranscodingProfiles"] as? [[String: Any]])
+        for entry in transcoding where entry["Type"] as? String == "Video" {
+            let codecs = entry["VideoCodec"] as? String ?? ""
+            XCTAssertFalse(
+                codecs.lowercased().contains("hevc"),
+                "Apple TV HD cannot decode HEVC in hardware")
+        }
+    }
 }

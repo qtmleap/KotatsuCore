@@ -434,7 +434,43 @@ public struct DeviceProfileBuilder: Sendable {
     private func transcodingProfiles() -> [[String: Any]] {
         var profiles: [[String: Any]] = []
 
-        // HLS + H.264/AAC — universally safe fallback.
+        // HLS in fragmented MP4 (CMAF) — the only HLS shape Apple accepts for
+        // HEVC, and the reason this profile is declared first.
+        //
+        // `Container` on a TranscodingProfile is the *segment* container: the
+        // server copies it into the TranscodingUrl as `SegmentContainer`. An
+        // HEVC stream remuxed into MPEG-TS violates the HLS authoring spec,
+        // and AVFoundation's failure mode for it is silent — the audio track
+        // plays while nothing is ever drawn, which is indistinguishable from
+        // an audio-only file. Most libraries are HEVC in Matroska, which
+        // cannot direct play (see `directPlayContainers`) and therefore takes
+        // exactly this path, so the whole library appears to lose video.
+        // jellyfin-web guards the same case by keeping HEVC out of its TS
+        // profile entirely ("safari doesn't support hevc in TS-HLS").
+        //
+        // fMP4 also carries FLAC and ALAC, which MPEG-TS cannot, so a remux
+        // of those stays a remux instead of falling back to a full transcode.
+        profiles.append([
+            "Type": "Video",
+            "Container": "mp4",
+            "Protocol": "hls",
+            "VideoCodec": advertisesHEVC ? "hevc,h264" : "h264",
+            "AudioCodec": advertisesHEVC ? "aac,mp3,ac3,eac3,flac,alac" : "aac,mp3,ac3,eac3",
+            "Context": "Streaming",
+            "EstimateContentLength": false,
+            "EnableMpegtsM2TsMode": false,
+            "TranscodeSeekInfo": "Auto",
+            "CopyTimestamps": false,
+            "MinSegments": 2,
+            "BreakOnNonKeyFrames": true,
+            "MaxAudioChannels": "6"
+        ])
+
+        // HLS in MPEG-TS — H.264 only, kept as the conservative fallback for
+        // servers that cannot produce fMP4 segments. H.264 in a transport
+        // stream is the one combination every Apple device has played since
+        // HLS shipped. It stays H.264-only on purpose: putting HEVC back here
+        // is what turned the library audio-only.
         profiles.append([
             "Type": "Video",
             "Container": "ts",
@@ -450,26 +486,6 @@ public struct DeviceProfileBuilder: Sendable {
             "BreakOnNonKeyFrames": true,
             "MaxAudioChannels": "6"
         ])
-
-        // HEVC transcode target for HEVC-capable devices — cheaper on
-        // bandwidth when the server has HEVC encoding available.
-        if advertisesHEVC {
-            profiles.append([
-                "Type": "Video",
-                "Container": "ts",
-                "Protocol": "hls",
-                "VideoCodec": "hevc,h264",
-                "AudioCodec": "aac,mp3,ac3,eac3,flac,alac",
-                "Context": "Streaming",
-                "EstimateContentLength": false,
-                "EnableMpegtsM2TsMode": false,
-                "TranscodeSeekInfo": "Auto",
-                "CopyTimestamps": false,
-                "MinSegments": 2,
-                "BreakOnNonKeyFrames": true,
-                "MaxAudioChannels": "6"
-            ])
-        }
 
         // Music transcode fallback.
         profiles.append([
