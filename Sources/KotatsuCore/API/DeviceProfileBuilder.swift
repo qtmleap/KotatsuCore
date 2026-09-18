@@ -6,7 +6,7 @@ import VideoToolbox
 import CoreMedia
 #endif
 
-/// Detected Apple TV generation used to shape the DeviceProfile sent to
+/// Detected hardware family used to shape the DeviceProfile sent to
 /// Jellyfin's `/Items/{id}/PlaybackInfo` endpoint.
 ///
 /// This is deliberately conservative:
@@ -20,18 +20,28 @@ import CoreMedia
 ///   HEVC 10-bit and (on newer models) Dolby Vision support. Direct play up
 ///   to 4K HEVC Main10 is safe.
 ///
+/// * `.iPad` / `.iPhone` always decode HEVC in silicon. The deployment target
+///   is iOS 26, which no A8/A9/A10 device can run, so there is no Apple-TV-HD
+///   shaped trap on this side — every iOS device that can install the app has
+///   a hardware HEVC decoder. Letting them fall through to `.unknown` instead
+///   is a silent regression rather than a visible one: playback still works,
+///   but the server burns CPU on a pointless H.264 transcode and caps the
+///   result at 1080p / 20 Mbps.
+///
 /// * `.simulator` and `.unknown` fall through the same "assume the worst"
 ///   path as the A8 to avoid surprises. Simulators cannot decode HEVC via
 ///   VideoToolbox in the same way real hardware does.
-public enum AppleTVGeneration: Sendable, Equatable {
+public enum DeviceGeneration: Sendable, Equatable {
     case appleTVHD          // AppleTV5,3 – A8
     case appleTV4K          // AppleTV6,2, AppleTV11,1 and newer
+    case iPad               // iPadN,X running iOS 26 — A12 or newer
+    case iPhone             // iPhoneN,X running iOS 26 — A13 or newer
     case simulator
     case unknown(String)
 
     public var supportsHEVC: Bool {
         switch self {
-        case .appleTV4K: return true
+        case .appleTV4K, .iPad, .iPhone: return true
         case .appleTVHD, .simulator, .unknown: return false
         }
     }
@@ -39,9 +49,16 @@ public enum AppleTVGeneration: Sendable, Equatable {
     /// Maximum streaming bitrate to advertise to the server in bits/second.
     /// Kept conservative: even on 4K we cap around 80 Mbps so the server
     /// picks a sane transcode target when direct play cannot happen.
+    ///
+    /// iPad sits at the Apple TV 4K figure on purpose. This number doubles as
+    /// a direct-play gate — a file above the cap gets transcoded even when the
+    /// codec itself is supported — so lowering it "to be kind to the battery"
+    /// would hand back the very transcode this type exists to avoid. iPhone is
+    /// capped lower because a 1080p-class panel cannot show the difference.
     public var maxStreamingBitrate: Int {
         switch self {
-        case .appleTV4K: return 80_000_000
+        case .appleTV4K, .iPad: return 80_000_000
+        case .iPhone: return 20_000_000
         case .appleTVHD, .simulator, .unknown: return 20_000_000
         }
     }
@@ -49,11 +66,38 @@ public enum AppleTVGeneration: Sendable, Equatable {
     /// Maximum resolution (long edge) we want to receive.
     public var maxResolutionWidth: Int {
         switch self {
-        case .appleTV4K: return 3840
+        case .appleTV4K, .iPad: return 3840
+        case .iPhone: return 1920
         case .appleTVHD, .simulator, .unknown: return 1920
         }
     }
+
+    /// Label sent as `Device=` in the Jellyfin auth header — the name the
+    /// server dashboard shows for this session.
+    ///
+    /// Both Apple TV models deliberately share one label. Every existing
+    /// install has already registered itself as "Apple TV", and splitting the
+    /// label by generation would rename all of those sessions in place for no
+    /// functional gain.
+    public var defaultDeviceName: String {
+        switch self {
+        case .appleTVHD, .appleTV4K: return "Apple TV"
+        case .iPad: return "iPad"
+        case .iPhone: return "iPhone"
+        case .simulator, .unknown:
+            #if os(tvOS)
+            return "Apple TV"
+            #elseif os(iOS)
+            return "iOS Device"
+            #else
+            return "Apple Device"
+            #endif
+        }
+    }
 }
+
+@available(*, deprecated, renamed: "DeviceGeneration")
+public typealias AppleTVGeneration = DeviceGeneration
 
 public enum DeviceGenerationDetector {
     /// Read `hw.machine` (real hardware) or fall back to `hw.model` (simulator).
@@ -79,7 +123,7 @@ public enum DeviceGenerationDetector {
         return "Unknown"
     }
 
-    public static func detect(identifier: String = machineIdentifier()) -> AppleTVGeneration {
+    public static func detect(identifier: String = machineIdentifier()) -> DeviceGeneration {
         if identifier.hasPrefix("Simulator") { return .simulator }
         // Real Apple TV identifiers
         // AppleTV5,3 = Apple TV HD (A8, 2015)
@@ -93,6 +137,12 @@ public enum DeviceGenerationDetector {
             let major = stripped.split(separator: ",").first.map { String($0) } ?? ""
             if let n = Int(major), n >= 6 { return .appleTV4K }
         }
+        // iOS hardware. No generation gate is needed the way it is on Apple TV:
+        // the iOS 26 deployment target already excludes every model that lacks
+        // a hardware HEVC decoder, so anything reaching this line can decode it.
+        // `hardwareSupportsHEVC()` still has the final say in `advertisesHEVC`.
+        if identifier.hasPrefix("iPad") { return .iPad }
+        if identifier.hasPrefix("iPhone") { return .iPhone }
         return .unknown(identifier)
     }
 
@@ -117,30 +167,58 @@ public enum DeviceGenerationDetector {
 /// the Jellyfin schema is large and mostly optional; sending only the fields
 /// we care about is intentional.
 public struct DeviceProfileBuilder: Sendable {
-    public var generation: AppleTVGeneration
+    public var generation: DeviceGeneration
     /// Runtime VideoToolbox HEVC check result. Injectable for tests.
     public var hardwareHEVC: Bool
     public var deviceName: String
     public var deviceId: String
     public var applicationVersion: String
+    /// The DeviceProfile's `Name`, which is how the server labels this client
+    /// in its playback logs.
+    public var profileName: String
 
     public init(
-        generation: AppleTVGeneration = DeviceGenerationDetector.detect(),
+        generation: DeviceGeneration = DeviceGenerationDetector.detect(),
         hardwareHEVC: Bool = DeviceGenerationDetector.hardwareSupportsHEVC(),
-        deviceName: String = "Apple TV",
+        deviceName: String? = nil,
         deviceId: String = DeviceProfileBuilder.persistentDeviceId(),
-        applicationVersion: String = "1.0.0"
+        applicationVersion: String = "1.0.0",
+        profileName: String = DeviceProfileBuilder.defaultProfileName
     ) {
         self.generation = generation
         self.hardwareHEVC = hardwareHEVC
-        self.deviceName = deviceName
+        self.deviceName = deviceName ?? generation.defaultDeviceName
         self.deviceId = deviceId
         self.applicationVersion = applicationVersion
+        self.profileName = profileName
+    }
+
+    /// Default DeviceProfile `Name` for the running build.
+    ///
+    /// The compile-time platform is the right signal here, and the only place
+    /// in this type where it is. HEVC support depends on the actual silicon and
+    /// so has to be sniffed at runtime; which OS the binary targets is settled
+    /// at build time and stays correct in the simulator, where `hw.machine`
+    /// reports the host Mac rather than the simulated device.
+    public static var defaultProfileName: String {
+        #if os(tvOS)
+        return "Jellyfin tvOS"
+        #elseif os(iOS)
+        return "Jellyfin iOS"
+        #else
+        return "Jellyfin"
+        #endif
     }
 
     /// A stable device identifier persisted in UserDefaults. Jellyfin uses
     /// this for session tracking and "This device" style UI in the server
     /// dashboard.
+    ///
+    /// The key still says `tvos` for a reason: changing it would orphan the
+    /// identifier every existing Apple TV install has already registered, and
+    /// each one would reappear in the server dashboard as a second device. The
+    /// iOS build gets its own value regardless — app containers do not share
+    /// UserDefaults — so there is nothing to disambiguate here.
     public static func persistentDeviceId() -> String {
         let key = "app.jellyfin.tvos.deviceId"
         if let existing = UserDefaults.standard.string(forKey: key) { return existing }
@@ -174,12 +252,16 @@ public struct DeviceProfileBuilder: Sendable {
             : ["aac", "mp3", "ac3", "eac3"]
     }
 
-    /// Containers the client is willing to Direct Play. MKV is only advertised
-    /// on 4K models because the A8 pipeline chokes on MKV muxing quirks.
+    /// Containers AVPlayer can consume directly. Matroska is intentionally
+    /// absent even when the device decodes HEVC: AVFoundation supports the
+    /// codec in MP4-family containers, but not the MKV container itself.
     public var directPlayContainers: [String] {
-        advertisesHEVC
-            ? ["mp4", "m4v", "mov", "mkv", "ts"]
-            : ["mp4", "m4v", "mov", "ts"]
+        ["mp4", "m4v", "mov", "ts"]
+    }
+
+    public func supportsDirectPlay(container: String) -> Bool {
+        let containers = container.lowercased().split(separator: ",")
+        return containers.contains { directPlayContainers.contains(String($0)) }
     }
 
     /// Subtitle formats declared in the DeviceProfile paired with the method
@@ -201,7 +283,7 @@ public struct DeviceProfileBuilder: Sendable {
 
     public func build() -> [String: Any] {
         var profile: [String: Any] = [
-            "Name": "Jellyfin tvOS",
+            "Name": profileName,
             "MaxStreamingBitrate": maxStreamingBitrate,
             "MaxStaticBitrate": maxStreamingBitrate,
             "MusicStreamingTranscodingBitrate": 384_000,
@@ -224,22 +306,22 @@ public struct DeviceProfileBuilder: Sendable {
         var profiles: [[String: Any]] = []
 
         // H.264 / AVC direct play — always supported.
-        let h264Containers = advertisesHEVC ? "mp4,m4v,mov,mkv,ts" : "mp4,m4v,mov,ts"
+        let videoContainers = directPlayContainers.joined(separator: ",")
         profiles.append([
             "Type": "Video",
-            "Container": h264Containers,
+            "Container": videoContainers,
             "VideoCodec": "h264",
             "AudioCodec": "aac,mp3,ac3,eac3"
         ])
 
-        // HEVC direct play — 4K models only.
+        // HEVC direct play — Apple TV 4K, iPad and iPhone.
         if advertisesHEVC {
             profiles.append([
                 "Type": "Video",
-                "Container": "mp4,m4v,mov,mkv,ts",
+                "Container": videoContainers,
                 "VideoCodec": "hevc",
-                // FLAC/ALAC/OPUS only on newer OS; tvOS AVPlayer handles all
-                // of these since tvOS 11.
+                // FLAC/ALAC/OPUS only on newer OS; AVPlayer handles all of
+                // these since tvOS 11 / iOS 11.
                 "AudioCodec": "aac,mp3,ac3,eac3,flac,alac,opus"
             ])
         }
@@ -262,7 +344,7 @@ public struct DeviceProfileBuilder: Sendable {
         var profiles: [[String: Any]] = []
 
         // H.264 constraints: Main / High profile, up to Level 4.2 on A8
-        // (1080p60), Level 5.1 on 4K models (4K30 in H.264).
+        // (1080p60), Level 5.1 everywhere else (4K30 in H.264).
         let h264Level = advertisesHEVC ? "51" : "42"
         profiles.append([
             "Type": "Video",
@@ -339,9 +421,10 @@ public struct DeviceProfileBuilder: Sendable {
                 ]
             ])
         }
-        // NOTE: We intentionally do NOT add profiles for AV1 or VP9 —
-        // tvOS AVPlayer does not hardware-decode them on any current
-        // Apple TV. Jellyfin will then transcode as needed.
+        // NOTE: We intentionally do NOT add profiles for AV1 or VP9. No
+        // current Apple TV hardware-decodes either, and the iOS models that
+        // do (A17 Pro / M3 and later, AV1 only) are too narrow a slice to
+        // advertise from a static profile. Jellyfin transcodes as needed.
 
         return profiles
     }
@@ -351,7 +434,43 @@ public struct DeviceProfileBuilder: Sendable {
     private func transcodingProfiles() -> [[String: Any]] {
         var profiles: [[String: Any]] = []
 
-        // HLS + H.264/AAC — universally safe fallback.
+        // HLS in fragmented MP4 (CMAF) — the only HLS shape Apple accepts for
+        // HEVC, and the reason this profile is declared first.
+        //
+        // `Container` on a TranscodingProfile is the *segment* container: the
+        // server copies it into the TranscodingUrl as `SegmentContainer`. An
+        // HEVC stream remuxed into MPEG-TS violates the HLS authoring spec,
+        // and AVFoundation's failure mode for it is silent — the audio track
+        // plays while nothing is ever drawn, which is indistinguishable from
+        // an audio-only file. Most libraries are HEVC in Matroska, which
+        // cannot direct play (see `directPlayContainers`) and therefore takes
+        // exactly this path, so the whole library appears to lose video.
+        // jellyfin-web guards the same case by keeping HEVC out of its TS
+        // profile entirely ("safari doesn't support hevc in TS-HLS").
+        //
+        // fMP4 also carries FLAC and ALAC, which MPEG-TS cannot, so a remux
+        // of those stays a remux instead of falling back to a full transcode.
+        profiles.append([
+            "Type": "Video",
+            "Container": "mp4",
+            "Protocol": "hls",
+            "VideoCodec": advertisesHEVC ? "hevc,h264" : "h264",
+            "AudioCodec": advertisesHEVC ? "aac,mp3,ac3,eac3,flac,alac" : "aac,mp3,ac3,eac3",
+            "Context": "Streaming",
+            "EstimateContentLength": false,
+            "EnableMpegtsM2TsMode": false,
+            "TranscodeSeekInfo": "Auto",
+            "CopyTimestamps": false,
+            "MinSegments": 2,
+            "BreakOnNonKeyFrames": true,
+            "MaxAudioChannels": "6"
+        ])
+
+        // HLS in MPEG-TS — H.264 only, kept as the conservative fallback for
+        // servers that cannot produce fMP4 segments. H.264 in a transport
+        // stream is the one combination every Apple device has played since
+        // HLS shipped. It stays H.264-only on purpose: putting HEVC back here
+        // is what turned the library audio-only.
         profiles.append([
             "Type": "Video",
             "Container": "ts",
@@ -367,26 +486,6 @@ public struct DeviceProfileBuilder: Sendable {
             "BreakOnNonKeyFrames": true,
             "MaxAudioChannels": "6"
         ])
-
-        // HEVC transcode target for 4K models only — cheaper on bandwidth
-        // when the server has HEVC encoding available.
-        if advertisesHEVC {
-            profiles.append([
-                "Type": "Video",
-                "Container": "ts",
-                "Protocol": "hls",
-                "VideoCodec": "hevc,h264",
-                "AudioCodec": "aac,mp3,ac3,eac3,flac,alac",
-                "Context": "Streaming",
-                "EstimateContentLength": false,
-                "EnableMpegtsM2TsMode": false,
-                "TranscodeSeekInfo": "Auto",
-                "CopyTimestamps": false,
-                "MinSegments": 2,
-                "BreakOnNonKeyFrames": true,
-                "MaxAudioChannels": "6"
-            ])
-        }
 
         // Music transcode fallback.
         profiles.append([

@@ -11,6 +11,17 @@ import os
 /// Playback reporting (`/Sessions/Playing[/Progress|/Stopped]`) then keeps
 /// "continue watching" and "next episode" shelves accurate.
 public struct JellyfinPlaybackService: PlaybackService {
+    enum Route: Equatable {
+        case directPlay
+        case transcode(String)
+        case directStream
+    }
+
+    struct Selection {
+        let source: MediaSourceDTO
+        let route: Route
+    }
+
     private let http: JellyfinHTTPClient
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let logger = Logger(subsystem: "app.jellyfin.tvos", category: "playback")
@@ -46,26 +57,30 @@ public struct JellyfinPlaybackService: PlaybackService {
             startPositionTicks: Int64(startPositionSeconds * 10_000_000)
         ))
 
-        guard let source = response.mediaSources?.first else {
+        guard let sources = response.mediaSources else {
             throw JellyfinAPIError.missingField("MediaSources")
         }
+        let selection = try selectPlayback(from: sources)
+        let source = selection.source
         let playSessionId = response.playSessionId ?? UUID().uuidString
 
-        // Decide direct play vs transcode. Jellyfin's `SupportsDirectPlay`
-        // is authoritative — trust it.
         let streamURL: URL
         let isTranscoded: Bool
-        if source.supportsDirectPlay == true {
+        switch selection.route {
+        case .directPlay:
             streamURL = try directPlayURL(itemId: itemId, sourceId: source.id, playSessionId: playSessionId)
             isTranscoded = false
-        } else if let transcodingUrl = source.transcodingUrl {
-            streamURL = try composeTranscodeURL(transcodingUrl)
+        case .transcode(let transcodingURL):
+            streamURL = try composeTranscodeURL(transcodingURL)
             isTranscoded = true
-        } else if source.supportsDirectStream == true {
-            streamURL = try directPlayURL(itemId: itemId, sourceId: source.id, playSessionId: playSessionId, staticStream: false)
+        case .directStream:
+            streamURL = try directPlayURL(
+                itemId: itemId,
+                sourceId: source.id,
+                playSessionId: playSessionId,
+                staticStream: false
+            )
             isTranscoded = false
-        } else {
-            throw JellyfinAPIError.server(status: 415, body: "No playable stream in PlaybackInfo response")
         }
 
         return PlaybackSession(
@@ -79,6 +94,32 @@ public struct JellyfinPlaybackService: PlaybackService {
             playSessionId: playSessionId,
             startPositionSeconds: startPositionSeconds
         )
+    }
+
+    func selectPlayback(from sources: [MediaSourceDTO]) throws -> Selection {
+        guard !sources.isEmpty else { throw JellyfinAPIError.missingField("MediaSources") }
+        func isCompatible(_ source: MediaSourceDTO) -> Bool {
+            source.container.map(deviceProfileBuilder.supportsDirectPlay(container:)) == true
+        }
+        if let source = sources.first(where: {
+            $0.supportsDirectPlay == true && isCompatible($0)
+        }) {
+            return Selection(source: source, route: .directPlay)
+        }
+        for source in sources {
+            if let url = source.transcodingUrl,
+                !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                return Selection(source: source, route: .transcode(url))
+            }
+        }
+        if let source = sources.first(where: {
+            $0.supportsDirectStream == true && isCompatible($0)
+        }) {
+            return Selection(source: source, route: .directStream)
+        }
+        throw JellyfinAPIError.server(
+            status: 415, body: "No playable stream in PlaybackInfo response")
     }
 
     private func directPlayURL(itemId: String, sourceId: String, playSessionId: String, staticStream: Bool = true) throws -> URL {

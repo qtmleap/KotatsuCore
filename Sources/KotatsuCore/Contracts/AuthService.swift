@@ -2,6 +2,9 @@ import Foundation
 
 public protocol AuthService: Sendable {
     func discoverServer(url: URL) async throws -> Server
+    func authenticate(
+        server: Server, username: String, password: String
+    ) async throws -> (user: UserProfile, accessToken: String)
     func initiateQuickConnect(server: Server) async throws -> QuickConnectSession
     func pollQuickConnect(server: Server, session: QuickConnectSession) async throws -> QuickConnectStatus
     func storedUsers() async -> [StoredUser]
