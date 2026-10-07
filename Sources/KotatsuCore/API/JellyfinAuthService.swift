@@ -165,6 +165,7 @@ public actor JellyfinAuthService: AuthService {
     }
 
     public func addUser(_ user: UserProfile, server: Server, accessToken: String) async throws {
+        try Task.checkCancellation()
         keychain.setString(accessToken, forKey: tokenKey(userId: user.id))
         var users = loadStoredUsers()
         users.removeAll { $0.id == user.id }
