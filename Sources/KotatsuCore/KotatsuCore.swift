@@ -53,7 +53,8 @@ public struct ServiceContainer: Sendable {
         return ServiceContainer(
             auth: JellyfinAuthService(http: http),
             media: JellyfinMediaService(http: http),
-            playback: JellyfinPlaybackService(http: http, deviceProfileBuilder: deviceProfileBuilder),
+            playback: JellyfinPlaybackService(
+                http: http, deviceProfileBuilder: deviceProfileBuilder),
             syncPlay: JellyfinSyncPlayService(http: http),
             system: JellyfinSystemService(http: http)
         )
@@ -77,11 +78,13 @@ public struct ServiceContainer: Sendable {
     }
 
     private static func configureKingfisher(for http: JellyfinHTTPClient) {
-        guard let host = http.server.url.host, !host.isEmpty else {
+        guard
+            let auth = JellyfinImageAuth(
+                serverURL: http.server.url, headerValue: http.authorizationHeaderValue)
+        else {
             JellyfinKingfisher.configure(auth: nil)
             return
         }
-        let auth = JellyfinImageAuth(host: host, headerValue: http.authorizationHeaderValue)
         JellyfinKingfisher.configure(auth: auth)
     }
 }

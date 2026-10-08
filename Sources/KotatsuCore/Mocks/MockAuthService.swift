@@ -2,11 +2,13 @@ import Foundation
 
 public actor MockAuthService: AuthService {
     private var users: [StoredUser]
-    private var currentUserId: String?
+    private var currentAccountKey: String?
 
-    public init(users: [StoredUser] = SampleData.users, currentUserId: String? = SampleData.users.first?.id) {
+    public init(
+        users: [StoredUser] = SampleData.users, currentUserId: String? = SampleData.users.first?.id
+    ) {
         self.users = users
-        self.currentUserId = currentUserId
+        self.currentAccountKey = users.first { $0.id == currentUserId }?.accountKey
     }
 
     public func discoverServer(url: URL) async throws -> Server {
@@ -32,7 +34,11 @@ public actor MockAuthService: AuthService {
         )
     }
 
-    public func pollQuickConnect(server: Server, session: QuickConnectSession) async throws -> QuickConnectStatus {
+    public func pollQuickConnect(
+        server: Server, session: QuickConnectSession
+    ) async throws
+        -> QuickConnectStatus
+    {
         try await Task.sleep(for: .seconds(2))
         let mockUser = UserProfile(
             id: "quick-\(UUID().uuidString.prefix(8))",
@@ -46,35 +52,64 @@ public actor MockAuthService: AuthService {
     public func storedUsers() async -> [StoredUser] { users }
 
     public func currentUser() async -> StoredUser? {
-        users.first { $0.id == currentUserId }
+        users.first { $0.accountKey == currentAccountKey }
     }
 
     public func switchUser(id: String) async throws {
-        guard users.contains(where: { $0.id == id }) else {
-            throw MockError.userNotFound
-        }
-        currentUserId = id
+        let matches = users.filter { $0.id == id }
+        guard matches.count == 1 else { throw MockError.userNotFound }
+        currentAccountKey = matches[0].accountKey
     }
 
     public func signOut(userId: String) async throws {
-        users.removeAll { $0.id == userId }
-        if currentUserId == userId { currentUserId = users.first?.id }
+        let matches = users.filter { $0.id == userId }
+        guard matches.count <= 1 else { throw MockError.userNotFound }
+        if let account = matches.first { try await signOut(account) }
     }
 
     public func addUser(_ user: UserProfile, server: Server, accessToken: String) async throws {
         let stored = StoredUser(profile: user, server: server)
+        users.removeAll { $0.accountKey == stored.accountKey }
         users.append(stored)
-        currentUserId = stored.id
+        currentAccountKey = stored.accountKey
     }
 
     public func accessToken(for userId: String) async -> String? {
-        users.contains(where: { $0.id == userId }) ? "mock-token-\(userId)" : nil
+        let matches = users.filter { $0.id == userId }
+        return matches.count == 1 ? "mock-token-\(userId)" : nil
     }
 
     public func listServerUsers() async throws -> [UserProfile] {
         try await Task.sleep(for: .milliseconds(200))
         return users.map(\.profile)
     }
+
+    public func switchUser(_ account: StoredUser) async throws {
+        guard let match = users.first(where: { $0.accountKey == account.accountKey }) else {
+            throw MockError.userNotFound
+        }
+        currentAccountKey = match.accountKey
+    }
+
+    public func signOut(_ account: StoredUser) async throws {
+        users.removeAll { $0.accountKey == account.accountKey }
+        if currentAccountKey == account.accountKey { currentAccountKey = users.first?.accountKey }
+    }
+
+    public func accessToken(for account: StoredUser) async -> String? {
+        users.contains(where: { $0.accountKey == account.accountKey })
+            ? "mock-token-\(account.id)" : nil
+    }
+
+    public func listPublicUsers(server: Server) async throws -> [UserProfile] {
+        users.filter { $0.server.connectionKey == server.connectionKey }.map(\.profile)
+    }
+
+    public func validateStoredSession(for account: StoredUser) async -> StoredSessionStatus {
+        users.contains(where: { $0.accountKey == account.accountKey }) ? .valid : .unauthorized
+    }
+
+    public func discardSession(server: Server, accessToken: String) async {}
 
     enum MockError: Error { case userNotFound }
 }
