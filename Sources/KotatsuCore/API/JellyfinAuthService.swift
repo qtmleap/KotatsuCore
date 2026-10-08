@@ -87,7 +87,9 @@ public actor JellyfinAuthService: AuthService {
             throw JellyfinAPIError.missingField("User")
         }
         let profile = userDTO.toDomain(server: server)
-        try await addUser(profile, server: server, accessToken: auth.accessToken)
+        // The caller commits the account after validating its active sign-in flow,
+        // just as with username/password authentication.
+        try Task.checkCancellation()
         return .authenticated(profile, accessToken: auth.accessToken)
     }
 
@@ -165,6 +167,7 @@ public actor JellyfinAuthService: AuthService {
     }
 
     public func addUser(_ user: UserProfile, server: Server, accessToken: String) async throws {
+        try Task.checkCancellation()
         keychain.setString(accessToken, forKey: tokenKey(userId: user.id))
         var users = loadStoredUsers()
         users.removeAll { $0.id == user.id }
