@@ -28,7 +28,7 @@ final class JellyfinQuickConnectPersistenceTests: XCTestCase {
     // Registered before start so every exit path cancels the listener.
     defer {
       loopback.stop()
-      keychain.removeValue(forKey: tokenKey)
+      keychain.removeEntireService()
       defaults.removePersistentDomain(forName: suiteName)
     }
     let port = try await loopback.start()
@@ -76,7 +76,8 @@ final class JellyfinQuickConnectPersistenceTests: XCTestCase {
     XCTAssertTrue(storedUsers.isEmpty, "pollQuickConnect must not store users")
     XCTAssertNil(currentUser, "pollQuickConnect must not set the current user")
     XCTAssertNil(storedToken)
-    XCTAssertNil(keychain.string(forKey: tokenKey), "pollQuickConnect must not write the Keychain")
+    XCTAssertNil(
+      keychain.string(forKey: tokenKey), "pollQuickConnect must not write the Keychain")
     XCTAssertNil(defaults.data(forKey: JellyfinAuthService.storedUsersKey))
     XCTAssertNil(defaults.string(forKey: JellyfinAuthService.currentUserKey))
     XCTAssertNil(http.accessToken, "pollQuickConnect must not apply HTTP credentials")
@@ -91,7 +92,9 @@ final class JellyfinQuickConnectPersistenceTests: XCTestCase {
     XCTAssertEqual(storedUsers, [StoredUser(profile: profile, server: server)])
     XCTAssertEqual(currentUser?.id, userId)
     XCTAssertEqual(storedToken, accessToken)
-    XCTAssertEqual(keychain.string(forKey: tokenKey), accessToken)
+    let scopedKey = "token:\(StoredUser(profile: profile, server: server).accountKey)"
+    XCTAssertEqual(keychain.string(forKey: scopedKey), accessToken)
+    XCTAssertNil(keychain.string(forKey: tokenKey))
     XCTAssertNotNil(defaults.data(forKey: JellyfinAuthService.storedUsersKey))
     XCTAssertEqual(defaults.string(forKey: JellyfinAuthService.currentUserKey), userId)
     XCTAssertEqual(http.accessToken, accessToken)
@@ -148,7 +151,9 @@ private final class QuickConnectLoopbackServer: @unchecked Sendable {
   private let authBody: Data
   private let pollBody: Data
 
-  init(secret: String, userId: String, userName: String, serverId: String, accessToken: String)
+  init(
+    secret: String, userId: String, userName: String, serverId: String, accessToken: String
+  )
     throws
   {
     self.secret = secret

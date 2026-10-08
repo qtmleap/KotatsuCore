@@ -4,23 +4,41 @@ import Kingfisher
 /// Auth context handed to Kingfisher's request modifier. Kept minimal so
 /// the modifier never captures the whole HTTP client actor.
 public struct JellyfinImageAuth: Sendable {
-    /// Host of the Jellyfin server. The modifier only attaches the auth
-    /// header when the requested image URL matches this host — so
-    /// third-party image URLs (e.g. TMDB fallbacks) never leak the token.
+    /// Host of the Jellyfin server (legacy, host-only scope).
     public let host: String
+    /// Exact server scope (scheme / host / effective port / base path). The
+    /// deprecated host-based initializer derives a strict HTTPS, port 443,
+    /// root-path scope from `host`.
+    let scope: ServerScope
     /// The `Authorization: MediaBrowser …` header value.
     public let headerValue: String
 
+    /// Credentials are attached only to URLs inside `serverURL`'s scheme,
+    /// host, effective port and base path (matched on a path-segment
+    /// boundary, so `/jf` does not cover `/jfx`).
+    public init?(serverURL: URL, headerValue: String) {
+        guard let scope = ServerScope(url: serverURL) else { return nil }
+        self.host = scope.host
+        self.scope = scope
+        self.headerValue = headerValue
+    }
+
+    @available(
+        *, deprecated,
+        message: "Use init(serverURL:headerValue:); host-only scoping is HTTPS port 443, root path."
+    )
     public init(host: String, headerValue: String) {
-        self.host = host
+        let lowered = host.lowercased()
+        self.host = lowered
+        self.scope = ServerScope(scheme: "https", host: lowered, port: 443, basePath: "")
         self.headerValue = headerValue
     }
 }
 
 /// Wires Kingfisher for Jellyfin: injects the `Authorization` header for
-/// requests that hit the Jellyfin host (and only that host — TMDB fallbacks
-/// stay anonymous), and sizes the memory/disk caches so a full home refresh
-/// survives an app relaunch without OOMing an Apple TV HD.
+/// requests that stay inside the Jellyfin server's scope (and only there —
+/// TMDB fallbacks stay anonymous), and sizes the memory/disk caches so a full
+/// home refresh survives an app relaunch without OOMing an Apple TV HD.
 public enum JellyfinKingfisher {
     /// Reflect the current auth context onto Kingfisher's shared downloader
     /// and cache. Called on every `ServiceContainer` rebuild (login, profile
@@ -37,6 +55,12 @@ public enum JellyfinKingfisher {
         downloader.sessionConfiguration.timeoutIntervalForRequest = 30
         downloader.sessionConfiguration.timeoutIntervalForResource = 300
 
+        KingfisherManager.shared.defaultOptions = defaultOptions(auth: auth)
+    }
+
+    /// The options `configure(auth:)` installs; separated so scope behaviour
+    /// is testable without touching shared state.
+    static func defaultOptions(auth: JellyfinImageAuth?) -> KingfisherOptionsInfo {
         var options: KingfisherOptionsInfo = [
             .backgroundDecode,
             .diskCacheExpiration(.days(30)),
@@ -44,8 +68,9 @@ public enum JellyfinKingfisher {
         ]
         if let auth {
             options.append(.requestModifier(makeAuthModifier(auth: auth)))
+            options.append(.redirectHandler(makeRedirectHandler(auth: auth)))
         }
-        KingfisherManager.shared.defaultOptions = options
+        return options
     }
 
     /// Wipe both cache tiers. Call on sign-out or when the user switches to
@@ -58,17 +83,31 @@ public enum JellyfinKingfisher {
 
     // MARK: - Auth modifier
 
-    private static func makeAuthModifier(auth: JellyfinImageAuth) -> AnyModifier {
-        let host = auth.host
+    static func makeAuthModifier(auth: JellyfinImageAuth) -> AnyModifier {
+        let scope = auth.scope
         let header = auth.headerValue
         return AnyModifier { request in
-            guard let requestHost = request.url?.host, requestHost == host else {
-                return request
-            }
+            guard scope.contains(request.url) else { return request }
             var modified = request
             modified.setValue(header, forHTTPHeaderField: "Authorization")
             return modified
         }
+    }
+
+    /// Strips credentials from any redirect that leaves the server scope.
+    static func makeRedirectHandler(auth: JellyfinImageAuth) -> AnyRedirectHandler {
+        let scope = auth.scope
+        return AnyRedirectHandler { _, _, newRequest, done in
+            done(stripAuthIfOutOfScope(newRequest, scope: scope))
+        }
+    }
+
+    static func stripAuthIfOutOfScope(_ request: URLRequest, scope: ServerScope) -> URLRequest {
+        guard !scope.contains(request.url) else { return request }
+        var stripped = request
+        stripped.setValue(nil, forHTTPHeaderField: "Authorization")
+        stripped.setValue(nil, forHTTPHeaderField: "X-Emby-Token")
+        return stripped
     }
 
     // MARK: - One-shot cache tuning
@@ -76,7 +115,7 @@ public enum JellyfinKingfisher {
     private static let applyOnce: Void = {
         let cache = ImageCache.default
         // Apple TV HD has 2GB total RAM — keep memory footprint conservative.
-        cache.memoryStorage.config.totalCostLimit = 96 * 1024 * 1024   // ~96MB
+        cache.memoryStorage.config.totalCostLimit = 96 * 1024 * 1024  // ~96MB
         cache.memoryStorage.config.countLimit = 200
         // Disk lives under Library/Caches/ on tvOS, so the OS is free to
         // reclaim it under storage pressure — the right home for regenerable

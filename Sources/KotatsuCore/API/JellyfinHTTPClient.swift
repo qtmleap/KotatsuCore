@@ -1,5 +1,5 @@
-import Foundation
 import Alamofire
+import Foundation
 import os
 
 /// The set of dynamic values needed to construct a Jellyfin
@@ -25,11 +25,11 @@ public struct JellyfinCredentials: Sendable {
     /// so an iPad session must not claim to be the tvOS client.
     public static var defaultClientName: String {
         #if os(tvOS)
-        return "Jellyfin-tvOS"
+            return "Jellyfin-tvOS"
         #elseif os(iOS)
-        return "Jellyfin-iOS"
+            return "Jellyfin-iOS"
         #else
-        return "Jellyfin"
+            return "Jellyfin"
         #endif
     }
 
@@ -60,7 +60,7 @@ public struct JellyfinCredentials: Sendable {
             "Client=\"\(clientName)\"",
             "Device=\"\(deviceName)\"",
             "DeviceId=\"\(deviceId)\"",
-            "Version=\"\(clientVersion)\""
+            "Version=\"\(clientVersion)\"",
         ]
         if let accessToken, !accessToken.isEmpty {
             parts.insert("Token=\"\(accessToken)\"", at: 0)
@@ -93,7 +93,8 @@ final class JellyfinHTTPState: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock<Storage>(initialState: Storage())
 
     struct Storage {
-        var credentials = JellyfinCredentials(server: Server(id: "", name: "", url: URL(string: "about:blank")!))
+        var credentials = JellyfinCredentials(
+            server: Server(id: "", name: "", url: URL(string: "about:blank")!))
         var onUnauthorized: (@Sendable () -> Void)?
     }
 
@@ -125,7 +126,10 @@ final class JellyfinRequestInterceptor: RequestInterceptor, @unchecked Sendable 
     private let state: JellyfinHTTPState
     init(state: JellyfinHTTPState) { self.state = state }
 
-    func adapt(_ urlRequest: URLRequest, for session: Session, completion: @escaping (Result<URLRequest, Error>) -> Void) {
+    func adapt(
+        _ urlRequest: URLRequest, for session: Session,
+        completion: @escaping (Result<URLRequest, Error>) -> Void
+    ) {
         var request = urlRequest
         let creds = state.credentials
         request.setValue(creds.authorizationHeader, forHTTPHeaderField: "Authorization")
@@ -142,7 +146,10 @@ final class JellyfinRequestInterceptor: RequestInterceptor, @unchecked Sendable 
         completion(.success(request))
     }
 
-    func retry(_ request: Request, for session: Session, dueTo error: Error, completion: @escaping (RetryResult) -> Void) {
+    func retry(
+        _ request: Request, for session: Session, dueTo error: Error,
+        completion: @escaping (RetryResult) -> Void
+    ) {
         if let statusCode = request.response?.statusCode, statusCode == 401 {
             state.fireUnauthorized()
         }
@@ -167,7 +174,8 @@ public enum JellyfinJSON {
             let plain = ISO8601DateFormatter()
             plain.formatOptions = [.withInternetDateTime]
             if let d = plain.date(from: str) { return d }
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unrecognised date: \(str)")
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "Unrecognised date: \(str)")
         }
         return d
     }
@@ -352,25 +360,38 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
         let method = urlRequest.httpMethod ?? "?"
         let url = urlRequest.url?.absoluteString ?? "<no-url>"
         AppLogger.debug("→ \(method) \(url)")
+        let scope = ServerScope(url: state.credentials.server.url)
         return try await withCheckedThrowingContinuation { [session] continuation in
             session.request(urlRequest)
+                .redirect(
+                    using: Redirector(
+                        behavior: .modify { _, newRequest, _ in
+                            // Never forward the token outside the server's scope.
+                            guard let scope, scope.contains(newRequest.url) else { return nil }
+                            return newRequest
+                        })
+                )
                 .validate(statusCode: 200..<300)
                 .responseData(queue: .global(qos: .userInitiated)) { response in
                     switch response.result {
-                    case let .success(data):
+                    case .success(let data):
                         let status = response.response?.statusCode ?? 0
                         AppLogger.debug("← \(status) \(method) \(url) (\(data.count) bytes)")
                         continuation.resume(returning: data)
-                    case let .failure(error):
+                    case .failure(let error):
                         let status = response.response?.statusCode ?? 0
                         let body = response.data.flatMap { String(data: $0, encoding: .utf8) }
                         let bodyExcerpt = body.map { String($0.prefix(400)) } ?? "<no-body>"
                         if status >= 400 {
                             AppLogger.warning("← \(status) \(method) \(url) body=\(bodyExcerpt)")
-                            continuation.resume(throwing: JellyfinAPIError.fromStatus(status, body: body))
+                            continuation.resume(
+                                throwing: JellyfinAPIError.fromStatus(status, body: body))
                         } else {
-                            AppLogger.error("✕ \(method) \(url) transport=\(error.localizedDescription)")
-                            continuation.resume(throwing: JellyfinAPIError.transport(underlying: error.localizedDescription))
+                            AppLogger.error(
+                                "✕ \(method) \(url) transport=\(error.localizedDescription)")
+                            continuation.resume(
+                                throwing: JellyfinAPIError.transport(
+                                    underlying: error.localizedDescription))
                         }
                     }
                 }
@@ -392,7 +413,8 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            AppLogger.error("Decoding failed for \(String(describing: T.self)): \(String(describing: error))")
+            AppLogger.error(
+                "Decoding failed for \(String(describing: T.self)): \(String(describing: error))")
             throw JellyfinAPIError.decoding(underlying: String(describing: error))
         }
     }
@@ -415,26 +437,32 @@ public final class JellyfinHTTPClient: @unchecked Sendable {
                     "User-Agent": credentials.userAgent,
                 ]
             )
-                .validate(statusCode: 200..<300)
-                .responseData(queue: .global(qos: .userInitiated)) { response in
-                    switch response.result {
-                    case let .success(data):
-                        do {
-                            let info = try JellyfinJSON.decoder.decode(SystemInfoPublicDTO.self, from: data)
-                            continuation.resume(returning: info)
-                        } catch {
-                            continuation.resume(throwing: JellyfinAPIError.decoding(underlying: String(describing: error)))
-                        }
-                    case let .failure(error):
-                        let status = response.response?.statusCode ?? 0
-                        let body = response.data.flatMap { String(data: $0, encoding: .utf8) }
-                        if status >= 400 {
-                            continuation.resume(throwing: JellyfinAPIError.fromStatus(status, body: body))
-                        } else {
-                            continuation.resume(throwing: JellyfinAPIError.transport(underlying: error.localizedDescription))
-                        }
+            .validate(statusCode: 200..<300)
+            .responseData(queue: .global(qos: .userInitiated)) { response in
+                switch response.result {
+                case .success(let data):
+                    do {
+                        let info = try JellyfinJSON.decoder.decode(
+                            SystemInfoPublicDTO.self, from: data)
+                        continuation.resume(returning: info)
+                    } catch {
+                        continuation.resume(
+                            throwing: JellyfinAPIError.decoding(
+                                underlying: String(describing: error)))
+                    }
+                case .failure(let error):
+                    let status = response.response?.statusCode ?? 0
+                    let body = response.data.flatMap { String(data: $0, encoding: .utf8) }
+                    if status >= 400 {
+                        continuation.resume(
+                            throwing: JellyfinAPIError.fromStatus(status, body: body))
+                    } else {
+                        continuation.resume(
+                            throwing: JellyfinAPIError.transport(
+                                underlying: error.localizedDescription))
                     }
                 }
+            }
         }
     }
 }
@@ -449,11 +477,15 @@ struct AnyEncodable: Encodable {
 
 // MARK: - JFRequest send
 
-public extension JellyfinHTTPClient {
+extension JellyfinHTTPClient {
     /// Execute a `JFRequest` and decode the response into `R.Response`.
     /// For endpoints that return no body, use `Response = JFEmptyResponse` and
     /// the response is discarded.
-    func send<R: JFRequest>(_ request: R, decoder: JSONDecoder = JellyfinJSON.decoder) async throws -> R.Response {
+    public func send<R: JFRequest>(
+        _ request: R, decoder: JSONDecoder = JellyfinJSON.decoder
+    )
+        async throws -> R.Response
+    {
         let urlRequest = try makeURLRequest(for: request)
         if R.Response.self == JFEmptyResponse.self {
             _ = try await performRawPublic(urlRequest)
@@ -465,7 +497,7 @@ public extension JellyfinHTTPClient {
 
     /// Build the `URLRequest` for a JFRequest without sending it. Exposed for
     /// tests that want to verify path/method/body encoding end-to-end.
-    func makeURLRequest<R: JFRequest>(for request: R) throws -> URLRequest {
+    public func makeURLRequest<R: JFRequest>(for request: R) throws -> URLRequest {
         let url = try request.buildURL(baseURL: state.credentials.server.url)
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = request.method.rawValue
