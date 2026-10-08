@@ -38,7 +38,7 @@ final class JellyfinQuickConnectPersistenceTests: XCTestCase {
       name: "Quick Connect Test Server",
       url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)"))
     )
-    let http = JellyfinHTTPClient(server: server)
+    let http = JellyfinHTTPClient(server: server, deviceId: "quick-connect-test-device")
     let service = JellyfinAuthService(
       http: http,
       keychain: keychain,
