@@ -132,7 +132,7 @@ public struct JellyfinPlaybackService: PlaybackService {
             URLQueryItem(name: "MediaSourceId", value: sourceId),
             URLQueryItem(name: "PlaySessionId", value: playSessionId),
             URLQueryItem(name: "DeviceId", value: http.deviceId),
-            URLQueryItem(name: "api_key", value: token),
+            URLQueryItem(name: "ApiKey", value: token),
         ]
         if staticStream {
             items.append(URLQueryItem(name: "Static", value: "true"))
