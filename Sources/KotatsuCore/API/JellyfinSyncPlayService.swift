@@ -232,7 +232,9 @@ public actor JellyfinSyncPlayService: SyncPlayService {
             } catch {
                 let nsError = error as NSError
                 AppLogger.warning("SyncPlay WS: receive ended — \(nsError.domain) \(nsError.code)")
-                eventContinuation.yield(.disconnected)
+                // A failed socket does not end the server-side membership.
+                // Explicit leave/rejection paths still publish disconnected.
+                if _currentGroup == nil { eventContinuation.yield(.disconnected) }
                 socketTask = nil
                 keepAliveTask?.cancel()
                 keepAliveTask = nil
