@@ -4,7 +4,7 @@ import os
 /// Real `SyncPlayService`. Owns two responsibilities:
 ///
 /// * REST calls to `/SyncPlay/*` for group management + playback commands.
-/// * A `URLSessionWebSocketTask` connected to `/socket?api_key=...` that
+/// * A `URLSessionWebSocketTask` connected to `/socket?ApiKey=...` that
 ///   receives `GroupUpdate` messages and translates them into
 ///   `SyncPlayEvent`s on the public `AsyncStream`.
 public actor JellyfinSyncPlayService: SyncPlayService {
@@ -198,14 +198,14 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         if basePath.hasSuffix("/") { basePath.removeLast() }
         comps.path = basePath + "/socket"
         comps.queryItems = [
-            URLQueryItem(name: "api_key", value: token),
+            URLQueryItem(name: "ApiKey", value: token),
             URLQueryItem(name: "deviceId", value: http.deviceId)
         ]
         guard let url = comps.url else {
-            AppLogger.error("SyncPlay WS: could not build socket URL from \(http.server.url.absoluteString)")
+            AppLogger.error("SyncPlay WS: could not build socket URL")
             return
         }
-        AppLogger.info("SyncPlay WS: connecting \(url.absoluteString)")
+        AppLogger.info("SyncPlay WS: connecting")
         let task = urlSession.webSocketTask(with: url)
         self.socketTask = task
         task.resume()
@@ -230,7 +230,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
                 let message = try await task.receive()
                 await handle(message: message)
             } catch {
-                AppLogger.warning("SyncPlay WS: receive ended — \(String(describing: error))")
+                let nsError = error as NSError
+                AppLogger.warning("SyncPlay WS: receive ended — \(nsError.domain) \(nsError.code)")
                 eventContinuation.yield(.disconnected)
                 socketTask = nil
                 keepAliveTask?.cancel()
@@ -253,7 +254,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
             do {
                 try await task.send(.string(frame))
             } catch {
-                AppLogger.warning("SyncPlay WS: keepalive send failed — \(String(describing: error))")
+                let nsError = error as NSError
+                AppLogger.warning("SyncPlay WS: keepalive send failed — \(nsError.domain) \(nsError.code)")
                 return
             }
         }
