@@ -29,8 +29,22 @@ final class SyncPlayWireServer: @unchecked Sendable {
     private var open: [ObjectIdentifier: NWConnection] = [:]
     private var socket: NWConnection?
     private var upgrades = 0
+    private let holdUpgrade: Bool
+    private var pendingUpgrade: (key: String, connection: NWConnection)?
 
-    init() throws {
+    /// With `holdUpgrade` the 101 response is withheld until `releaseUpgrade()`,
+    /// so tests can act while the client socket is allocated but connecting.
+    /// The held connection stays in `open`, so `stop()` still cancels it.
+    ///
+    /// With `holdPauseResponse` the 204 for `POST /SyncPlay/Pause` is withheld
+    /// until `releasePauseResponse()` (the request itself is fully received).
+    /// The held connection stays in `open`, so `stop()` still cancels it.
+    private let holdPauseResponse: Bool
+    private var pendingPause: NWConnection?
+
+    init(holdUpgrade: Bool = false, holdPauseResponse: Bool = false) throws {
+        self.holdUpgrade = holdUpgrade
+        self.holdPauseResponse = holdPauseResponse
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
         listener = try NWListener(using: parameters)
@@ -70,6 +84,7 @@ final class SyncPlayWireServer: @unchecked Sendable {
         let all = Array(open.values)
         open.removeAll()
         socket = nil
+        pendingPause = nil
         lock.unlock()
         for connection in all { connection.cancel() }
     }
@@ -85,6 +100,48 @@ final class SyncPlayWireServer: @unchecked Sendable {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         throw WireError.timeout("client WebSocket upgrade")
+    }
+
+    /// Bounded positive wait until a held upgrade request has arrived.
+    func waitForPendingUpgrade(timeout: TimeInterval = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if lock.withLock({ pendingUpgrade != nil }) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw WireError.timeout("held WebSocket upgrade request")
+    }
+
+    /// Completes a held upgrade handshake.
+    func releaseUpgrade() throws {
+        let pending = lock.withLock { () -> (key: String, connection: NWConnection)? in
+            let p = pendingUpgrade
+            pendingUpgrade = nil
+            return p
+        }
+        guard let pending else { throw WireError.timeout("no held upgrade to release") }
+        upgrade(key: pending.key, on: pending.connection)
+    }
+
+    /// Bounded positive wait until a held Pause request has arrived.
+    func waitForPendingPause(timeout: TimeInterval = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if lock.withLock({ pendingPause != nil }) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw WireError.timeout("held Pause request")
+    }
+
+    /// Answers a held Pause request with the normal empty 204.
+    func releasePauseResponse() throws {
+        let pending = lock.withLock { () -> NWConnection? in
+            let p = pendingPause
+            pendingPause = nil
+            return p
+        }
+        guard let pending else { throw WireError.timeout("no held Pause to release") }
+        respond(.empty, on: pending)
     }
 
     func sendText(_ text: String) async throws {
@@ -201,10 +258,16 @@ final class SyncPlayWireServer: @unchecked Sendable {
             head.headers["upgrade"]?.lowercased() == "websocket",
             let key = head.headers["sec-websocket-key"]
         {
-            upgrade(key: key, on: connection)
+            if holdUpgrade {
+                lock.withLock { pendingUpgrade = (key, connection) }
+            } else {
+                upgrade(key: key, on: connection)
+            }
             return
         }
-        if head.path.contains("/SyncPlay/List") {
+        if holdPauseResponse, head.path.contains("/SyncPlay/Pause") {
+            lock.withLock { pendingPause = connection }
+        } else if head.path.contains("/SyncPlay/List") {
             respond(
                 .json([SyncPlayWireFrames.groupInfo(id: "group-2", name: "Other")]), on: connection)
         } else if head.path.contains("/SyncPlay/New") {

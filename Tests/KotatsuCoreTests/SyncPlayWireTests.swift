@@ -71,12 +71,14 @@ final class SyncPlayWireTests: XCTestCase {
         /// Sends `frames`, then a matching `Stop` (group-1) barrier; returns events
         /// before the barrier and `currentGroup` as observed right after it.
         func barrierThenCurrentGroup(
-            _ frames: [String]
+            _ frames: [String], barrierGroupId: String = "group-1"
         ) async throws -> (
             [SyncPlayEvent], SyncPlayGroup?
         ) {
             for f in frames { try await server.sendText(f) }
-            try await server.sendText(SyncPlayWireFrames.command("Stop", playlistItemId: "barrier"))
+            try await server.sendText(
+                SyncPlayWireFrames.command(
+                    "Stop", groupId: barrierGroupId, playlistItemId: "barrier"))
             let i = try await waitForEvent(from: 1, SyncPlayWireTests.isBarrierStop)
             let current = await service.currentGroup
             return (Array(log.all[1..<i]), current)
@@ -115,8 +117,14 @@ final class SyncPlayWireTests: XCTestCase {
     /// Boots server + service and joins group-1 via the real `createGroup` REST
     /// path, then waits (bounded) for the WebSocket upgrade. `log.all[0]` is
     /// always `.groupChanged(group-1)`.
-    private func makeFixture() async throws -> Fixture {
-        let server = try SyncPlayWireServer()
+    /// `holdUpgrade` (test-controlled) withholds the WebSocket 101 and skips the
+    /// upgrade wait, leaving the socket allocated but still connecting.
+    /// `holdPauseResponse` withholds the REST 204 of `POST /SyncPlay/Pause`.
+    private func makeFixture(
+        holdUpgrade: Bool = false, holdPauseResponse: Bool = false
+    ) async throws -> Fixture {
+        let server = try SyncPlayWireServer(
+            holdUpgrade: holdUpgrade, holdPauseResponse: holdPauseResponse)
         let port = try await server.start()
         let session = URLSession(configuration: .ephemeral)
         let base = Server(id: "s", name: "s", url: URL(string: "http://127.0.0.1:\(port)")!)
@@ -137,7 +145,7 @@ final class SyncPlayWireTests: XCTestCase {
         do {
             let created = try await service.createGroup(name: "Fake")
             XCTAssertEqual(created, Self.group)
-            try await server.waitForSocket()
+            if !holdUpgrade { try await server.waitForSocket() }
             _ = try await fixture.waitForEvent { $0 == .groupChanged(Self.group) }
         } catch {
             fixture.cleanup()
@@ -525,6 +533,281 @@ final class SyncPlayWireTests: XCTestCase {
                         kind: .pause, playlistItemId: "pl-1", positionSeconds: 0,
                         when: Self.wireDate, emittedAt: Self.wireDate))
             ])
+    }
+
+    // MARK: - Zero-GUID NotInGroup (Jellyfin 12.2 rejection of a non-member command)
+
+    private static let zeroCompact = "00000000000000000000000000000000"
+    private static let zeroDashed = "00000000-0000-0000-0000-000000000000"
+
+    private static let group2 = SyncPlayGroup(id: "group-2", name: "Other")
+
+    private static func zeroNotInGroup(_ scope: String) -> String {
+        SyncPlayWireFrames.groupUpdate(type: "NotInGroup", groupId: scope, data: "")
+    }
+
+    /// RED on unchanged source. After a local group action, the server's zero-GUID
+    /// NotInGroup (compact or dashed) ends the cached membership exactly once.
+    func testZeroGuidNotInGroupAfterLocalActionClearsMembership() async throws {
+        for scope in [Self.zeroCompact, Self.zeroDashed] {
+            let f = try await makeFixture()
+            defer { f.cleanup() }
+            await f.service.requestPause(positionSeconds: 0)
+            let (events, current) = try await f.barrierThenCurrentGroup([
+                Self.zeroNotInGroup(scope)
+            ])
+            XCTAssertEqual(events, [.disconnected], scope)
+            XCTAssertNil(current, scope)
+        }
+    }
+
+    /// RED on unchanged source. Repeated zero rejections after membership was
+    /// cleared emit no further `.disconnected`.
+    func testRepeatedZeroGuidNotInGroupEmitsSingleDisconnected() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        await f.service.requestPause(positionSeconds: 0)
+        let (events, current) = try await f.barrierThenCurrentGroup([
+            Self.zeroNotInGroup(Self.zeroCompact),
+            Self.zeroNotInGroup(Self.zeroCompact),
+            Self.zeroNotInGroup(Self.zeroDashed),
+            Self.zeroNotInGroup(Self.zeroDashed),
+        ])
+        XCTAssertEqual(events, [.disconnected])
+        XCTAssertNil(current)
+    }
+
+    /// Without any local group action a zero-GUID rejection is not ours.
+    func testZeroGuidNotInGroupWithoutLocalActionIsIgnored() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        let (events, current) = try await f.barrierThenCurrentGroup([
+            Self.zeroNotInGroup(Self.zeroCompact), Self.zeroNotInGroup(Self.zeroDashed),
+        ])
+        XCTAssertEqual(events, [])
+        XCTAssertEqual(current, Self.group)
+    }
+
+    /// An action sent for the old membership must not let a stale zero rejection
+    /// end a membership installed afterwards by a WebSocket GroupJoined.
+    func testZeroGuidNotInGroupAfterWebSocketGroupJoinedIsIgnored() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        await f.service.requestPause(positionSeconds: 0)
+        try await f.server.sendText(
+            SyncPlayWireFrames.groupUpdate(
+                type: "GroupJoined", groupId: "group-2",
+                data: SyncPlayWireFrames.groupInfo(id: "group-2", name: "Other")))
+        _ = try await f.waitForEvent(from: 1) { $0 == .groupChanged(Self.group2) }
+        let (events, current) = try await f.barrierThenCurrentGroup(
+            [Self.zeroNotInGroup(Self.zeroCompact), Self.zeroNotInGroup(Self.zeroDashed)],
+            barrierGroupId: "group-2")
+        XCTAssertEqual(events, [.groupChanged(Self.group2)])
+        XCTAssertEqual(current, Self.group2)
+    }
+
+    /// Same, for a membership installed by a successful `joinGroup`.
+    func testZeroGuidNotInGroupAfterSuccessfulJoinIsIgnored() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        await f.service.requestPause(positionSeconds: 0)
+        try await f.service.joinGroup(id: "group-2")
+        let (events, current) = try await f.barrierThenCurrentGroup(
+            [Self.zeroNotInGroup(Self.zeroCompact), Self.zeroNotInGroup(Self.zeroDashed)],
+            barrierGroupId: "group-2")
+        XCTAssertEqual(events, [.groupChanged(Self.group2)])
+        XCTAssertEqual(current, Self.group2)
+    }
+
+    /// Same, for a membership installed by a successful `createGroup` (the fake
+    /// server answers group-1 again, so the cached group is identical).
+    func testZeroGuidNotInGroupAfterSuccessfulCreateIsIgnored() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        await f.service.requestPause(positionSeconds: 0)
+        let created = try await f.service.createGroup(name: "Fake")
+        XCTAssertEqual(created, Self.group)
+        let (events, current) = try await f.barrierThenCurrentGroup([
+            Self.zeroNotInGroup(Self.zeroCompact), Self.zeroNotInGroup(Self.zeroDashed),
+        ])
+        XCTAssertEqual(events, [.groupChanged(Self.group)])
+        XCTAssertEqual(current, Self.group)
+    }
+
+    /// Even with a local action recorded, zero-GUID scopes on anything other than
+    /// NotInGroup stay foreign, and nonzero foreign rejections stay ignored.
+    func testZeroGuidScopeOnOtherUpdatesRemainsForeignAfterLocalAction() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        await f.service.requestPause(positionSeconds: 0)
+        var frames = [
+            SyncPlayWireFrames.groupUpdate(
+                type: "GroupLeft", groupId: Self.zeroCompact, data: Self.zeroCompact),
+            SyncPlayWireFrames.groupUpdate(
+                type: "GroupDoesNotExist", groupId: Self.zeroCompact, data: ""),
+            SyncPlayWireFrames.groupUpdate(
+                type: "UserJoined", groupId: Self.zeroDashed, data: "bob"),
+            SyncPlayWireFrames.groupUpdate(type: "UserLeft", groupId: Self.zeroDashed, data: "bob"),
+            SyncPlayWireFrames.playQueue(groupId: Self.zeroCompact),
+        ]
+        frames += ["Unpause", "Pause", "Seek", "Stop"].map {
+            SyncPlayWireFrames.command($0, groupId: Self.zeroCompact, ticks: 100_000_000)
+        }
+        frames += ["NotInGroup", "GroupDoesNotExist"].map {
+            SyncPlayWireFrames.groupUpdate(type: $0, groupId: "group-2", data: "group-2")
+        }
+        let (events, current) = try await f.barrierThenCurrentGroup(frames)
+        XCTAssertEqual(events, [])
+        XCTAssertEqual(current, Self.group)
+    }
+
+    /// Every public group action path records the local action.
+    func testZeroGuidNotInGroupAfterEachGroupActionClearsMembership() async throws {
+        let actions: [(String, @Sendable (JellyfinSyncPlayService) async throws -> Void)] = [
+            ("requestPlay", { await $0.requestPlay(positionSeconds: 1) }),
+            ("requestPause", { await $0.requestPause(positionSeconds: 1) }),
+            ("requestSeek", { await $0.requestSeek(positionSeconds: 1) }),
+            ("stopGroup", { await $0.stopGroup() }),
+            ("setNewQueue", { try await $0.setNewQueue(itemIds: ["i1"], startPositionSeconds: 1) }),
+            (
+                "notifyReady",
+                { await $0.notifyReady(positionSeconds: 1, isPlaying: true, playlistItemId: "p") }
+            ),
+            (
+                "notifyBuffering",
+                {
+                    await $0.notifyBuffering(
+                        positionSeconds: 1, isPlaying: true, playlistItemId: "p")
+                }
+            ),
+        ]
+        for (name, action) in actions {
+            let f = try await makeFixture()
+            defer { f.cleanup() }
+            try await action(f.service)
+            let (events, current) = try await f.barrierThenCurrentGroup([
+                Self.zeroNotInGroup(Self.zeroCompact)
+            ])
+            XCTAssertEqual(events, [.disconnected], name)
+            XCTAssertNil(current, name)
+        }
+    }
+
+    /// A GroupJoined refresh of the SAME group identity in another UUID spelling
+    /// keeps the recorded local action, so the zero rejection still clears.
+    func testZeroGuidNotInGroupAfterSameIdentityGroupJoinedRefreshClears() async throws {
+        let f = try await makeFixture()
+        defer { f.cleanup() }
+        let dashed = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+        let alias = "0A1B2C3D4E5F60718293A4B5C6D7E8F9"
+        func joined(_ id: String, _ name: String) -> String {
+            SyncPlayWireFrames.groupUpdate(
+                type: "GroupJoined", groupId: id,
+                data: SyncPlayWireFrames.groupInfo(id: id, name: name))
+        }
+        try await f.server.sendText(joined(dashed, "Real"))
+        _ = try await f.waitForEvent(from: 1) {
+            if case .groupChanged(let g) = $0 { return g.name == "Real" }
+            return false
+        }
+        await f.service.requestPause(positionSeconds: 0)
+        try await f.server.sendText(joined(alias, "Refreshed"))
+        _ = try await f.waitForEvent(from: 1) {
+            if case .groupChanged(let g) = $0 { return g.name == "Refreshed" }
+            return false
+        }
+        let (events, current) = try await f.barrierThenCurrentGroup(
+            [Self.zeroNotInGroup(Self.zeroDashed)], barrierGroupId: alias)
+        XCTAssertEqual(events.filter { $0 == .disconnected }.count, 1)
+        XCTAssertNil(current)
+    }
+
+    /// Weaker transport condition: `socketTask != nil` only means a transport is
+    /// allocated, not that the handshake completed. The action is recorded while
+    /// the upgrade is still held; a received frame afterwards confirms readiness.
+    func testZeroGuidNotInGroupAfterActionWhileSocketStillConnectingClears() async throws {
+        let f = try await makeFixture(holdUpgrade: true)
+        defer { f.cleanup() }
+        try await f.server.waitForPendingUpgrade()
+        XCTAssertEqual(f.server.upgradeCount, 0, "handshake must not have completed")
+        await f.service.requestPause(positionSeconds: 0)
+        try f.server.releaseUpgrade()
+        try await f.server.waitForSocket()
+        let (events, current) = try await f.barrierThenCurrentGroup([
+            Self.zeroNotInGroup(Self.zeroCompact)
+        ])
+        XCTAssertEqual(events, [.disconnected])
+        XCTAssertNil(current)
+    }
+
+    /// RED while the local action is recorded only after the HTTP response: the
+    /// Pause request has reached the server (response held), so the action was
+    /// sent and a zero-GUID rejection arriving BEFORE the REST 204 must clear.
+    func testZeroGuidNotInGroupBeforePauseResponseClearsMembership() async throws {
+        let f = try await makeFixture(holdPauseResponse: true)
+        let service = f.service
+        let pause = Task { await service.requestPause(positionSeconds: 0) }
+        var released = false
+        defer {
+            if !released { try? f.server.releasePauseResponse() }
+            pause.cancel()
+            f.cleanup()
+        }
+        try await f.server.waitForPendingPause()
+        let (events, current) = try await f.barrierThenCurrentGroup([
+            Self.zeroNotInGroup(Self.zeroCompact)
+        ])
+        XCTAssertEqual(
+            events.filter { $0 == .disconnected }.count, 1,
+            "zero NotInGroup before the REST response must clear")
+        XCTAssertNil(current)
+        try f.server.releasePauseResponse()
+        released = true
+        await pause.value
+        let after = await f.service.currentGroup
+        XCTAssertNil(after)
+        XCTAssertEqual(f.log.all.filter { $0 == .disconnected }.count, 1)
+    }
+
+    /// RED while an old Pause completion can re-arm after a same-ID createGroup:
+    /// the new membership context reset the intent, so the late completion of
+    /// the old request must not let a zero rejection clear the new membership.
+    func testOldPauseCompletionAfterSameIdCreateDoesNotRearmZeroRejection() async throws {
+        let f = try await makeFixture(holdPauseResponse: true)
+        let service = f.service
+        let pause = Task { await service.requestPause(positionSeconds: 0) }
+        var released = false
+        defer {
+            if !released { try? f.server.releasePauseResponse() }
+            pause.cancel()
+            f.cleanup()
+        }
+        try await f.server.waitForPendingPause()
+        let created = try await f.service.createGroup(name: "Fake")
+        XCTAssertEqual(created, Self.group)
+        try f.server.releasePauseResponse()
+        released = true
+        await pause.value
+        let (events, current) = try await f.barrierThenCurrentGroup([
+            Self.zeroNotInGroup(Self.zeroCompact), Self.zeroNotInGroup(Self.zeroDashed),
+        ])
+        XCTAssertEqual(events, [.groupChanged(Self.group)])
+        XCTAssertFalse(events.contains(.disconnected))
+        XCTAssertEqual(current, Self.group)
+    }
+
+    /// Existing behaviour: matching, missing and empty scopes still clear.
+    func testMatchingMissingAndEmptyScopeNotInGroupStillClearsMembership() async throws {
+        let scopes: [String?] = ["group-1", "GROUP-1", nil, ""]
+        for scope in scopes {
+            let f = try await makeFixture()
+            defer { f.cleanup() }
+            let (events, current) = try await f.barrierThenCurrentGroup([
+                SyncPlayWireFrames.groupUpdate(type: "NotInGroup", groupId: scope, data: "")
+            ])
+            XCTAssertEqual(events, [.disconnected], "scope \(scope ?? "nil")")
+            XCTAssertNil(current, "scope \(scope ?? "nil")")
+        }
     }
 
     // MARK: - DTO metadata characterization

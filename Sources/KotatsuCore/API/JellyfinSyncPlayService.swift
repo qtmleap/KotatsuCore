@@ -11,7 +11,24 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     private let http: JellyfinHTTPClient
     private let logger = Logger(subsystem: "app.jellyfin.tvos", category: "syncplay")
 
-    private var _currentGroup: SyncPlayGroup?
+    private var _currentGroup: SyncPlayGroup? {
+        didSet {
+            // Same group identity (e.g. a GroupJoined refresh in another
+            // UUID spelling) keeps the record; any other change drops it.
+            if oldValue.map({ Self.normalizedId($0.id) })
+                != _currentGroup.map({ Self.normalizedId($0.id) })
+            {
+                hasGroupActionOnCurrentSocket = false
+            }
+        }
+    }
+    /// True once a group REST action was dispatched while a group was cached
+    /// and the current socket was allocated. Only then may a zero-GUID
+    /// `NotInGroup` be read as rejecting the cached group. Known limit: an
+    /// obsolete unscoped rejection arriving after a new join AND a new action
+    /// is fundamentally uncorrelated; we only guard the post-join, pre-action
+    /// window.
+    private var hasGroupActionOnCurrentSocket = false
     private var socketTask: URLSessionWebSocketTask?
     private var listenerTask: Task<Void, Never>?
     private var keepAliveTask: Task<Void, Never>?
@@ -55,6 +72,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     }
 
     public func createGroup(name: String) async throws -> SyncPlayGroup {
+        hasGroupActionOnCurrentSocket = false
         // Snapshot the group list BEFORE creation so the 204 branch has a way
         // to identify the freshly-created group (see fallback below).
         let priorIds = Set(((try? await http.send(SyncPlayListRequest())) ?? []).map(\.groupId))
@@ -88,6 +106,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     }
 
     public func joinGroup(id: String) async throws {
+        hasGroupActionOnCurrentSocket = false
         _ = try await http.send(SyncPlayJoinRequest(groupId: id))
         let groups = try await availableGroups()
         if let group = groups.first(where: { $0.id == id }) {
@@ -98,6 +117,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     }
 
     public func leaveGroup() async throws {
+        hasGroupActionOnCurrentSocket = false
         _ = try await http.send(SyncPlayLeaveRequest())
         _currentGroup = nil
         eventContinuation.yield(.disconnected)
@@ -113,6 +133,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         // a Seek command inside its Unpause broadcast when catch-up is
         // needed, so double-writing was just adding races.
         do {
+            recordGroupAction()
             _ = try await http.send(SyncPlayUnpauseRequest())
         } catch {
             logger.warning("requestPlay failed: \(String(describing: error), privacy: .public)")
@@ -121,6 +142,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func requestPause(positionSeconds: TimeInterval) async {
         do {
+            recordGroupAction()
             _ = try await http.send(SyncPlayPauseRequest())
         } catch {
             logger.warning("requestPause failed: \(String(describing: error), privacy: .public)")
@@ -129,6 +151,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func requestSeek(positionSeconds: TimeInterval) async {
         do {
+            recordGroupAction()
             _ = try await http.send(
                 SyncPlaySeekRequest(positionTicks: Int64(positionSeconds * 10_000_000)))
         } catch {
@@ -140,6 +163,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func setNewQueue(itemIds: [String], startPositionSeconds: TimeInterval) async throws {
         let ticks = Int64(startPositionSeconds * 10_000_000)
+        recordGroupAction()
         _ = try await http.send(
             SyncPlaySetNewQueueRequest(
                 itemIds: itemIds,
@@ -153,6 +177,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         async
     {
         do {
+            recordGroupAction()
             _ = try await http.send(
                 SyncPlayReadyRequest(
                     positionTicks: Int64(positionSeconds * 10_000_000),
@@ -169,6 +194,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?
     ) async {
         do {
+            recordGroupAction()
             _ = try await http.send(
                 SyncPlayBufferingRequest(
                     positionTicks: Int64(positionSeconds * 10_000_000),
@@ -183,10 +209,20 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func stopGroup() async {
         do {
+            recordGroupAction()
             _ = try await http.send(SyncPlayStopRequest())
         } catch {
             logger.warning("stopGroup failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Records an action before dispatch, so its WebSocket rejection may arrive
+    /// before or after the HTTP response. Membership/socket transitions reset
+    /// the record; an old request completion must never restore it.
+    /// `socketTask` denotes the allocated current transport, which may still
+    /// be connecting. It does not assert that the handshake has completed.
+    private func recordGroupAction() {
+        hasGroupActionOnCurrentSocket = _currentGroup != nil && socketTask != nil
     }
 
     // MARK: - WebSocket
@@ -219,6 +255,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         AppLogger.info("SyncPlay WS: connecting")
         let task = urlSession.webSocketTask(with: url)
         self.socketTask = task
+        hasGroupActionOnCurrentSocket = false
         task.resume()
         listenerTask = Task { [weak self] in
             await self?.listenLoop()
@@ -247,6 +284,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
                 // Explicit leave/rejection paths still publish disconnected.
                 if _currentGroup == nil { eventContinuation.yield(.disconnected) }
                 socketTask = nil
+                hasGroupActionOnCurrentSocket = false
                 keepAliveTask?.cancel()
                 keepAliveTask = nil
                 return
@@ -342,6 +380,11 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         return lower
     }
 
+    private static func isZeroGuid(_ id: String) -> Bool {
+        let key = normalizedId(id)
+        return key.count == 32 && key.allSatisfy { $0 == "0" }
+    }
+
     /// True when an update/command scoped to `groupId` should be ignored
     /// because it targets a group other than the cached current one. With no
     /// scope or no cached group there is nothing to contradict.
@@ -428,7 +471,17 @@ public actor JellyfinSyncPlayService: SyncPlayService {
             // Membership-ending (GroupLeft) or rejection (stale state).
             // Scoped to the current group; foreign ones are ignored.
             let scope = outerGroupId ?? (type == "GroupLeft" ? update["Data"] as? String : nil)
-            if isForeign(scope) {
+            if type == "NotInGroup", let scope, !scope.isEmpty,
+                Self.isZeroGuid(scope)
+            {
+                // A session rejection carries an all-zero GUID instead of the
+                // group id. Honour it only after an action was dispatched with
+                // the cached membership and current allocated socket.
+                guard _currentGroup != nil, hasGroupActionOnCurrentSocket else {
+                    logger.debug("Unscoped NotInGroup ignored")
+                    return
+                }
+            } else if isForeign(scope) {
                 logger.debug("Foreign-group \(type, privacy: .public) ignored")
                 return
             }
