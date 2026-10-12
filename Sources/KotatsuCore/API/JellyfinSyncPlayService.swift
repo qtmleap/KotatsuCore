@@ -23,8 +23,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     public init(http: JellyfinHTTPClient, urlSession: URLSession = .shared) {
         self.http = http
         self.urlSession = urlSession
-        var continuation: AsyncStream<SyncPlayEvent>.Continuation!
-        self.events = AsyncStream { continuation = $0 }
+        let (events, continuation) = AsyncStream<SyncPlayEvent>.makeStream()
+        self.events = events
         self.eventContinuation = continuation
     }
 
@@ -73,7 +73,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
             let after = try await http.send(SyncPlayListRequest())
             guard let created = after.first(where: { !priorIds.contains($0.groupId) }) else {
                 throw JellyfinAPIError.decoding(
-                    underlying: "SyncPlay/New succeeded but no new group was found in /SyncPlay/List"
+                    underlying:
+                        "SyncPlay/New succeeded but no new group was found in /SyncPlay/List"
                 )
             }
             dto = created
@@ -128,7 +129,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func requestSeek(positionSeconds: TimeInterval) async {
         do {
-            _ = try await http.send(SyncPlaySeekRequest(positionTicks: Int64(positionSeconds * 10_000_000)))
+            _ = try await http.send(
+                SyncPlaySeekRequest(positionTicks: Int64(positionSeconds * 10_000_000)))
         } catch {
             logger.warning("requestSeek failed: \(String(describing: error), privacy: .public)")
         }
@@ -138,33 +140,42 @@ public actor JellyfinSyncPlayService: SyncPlayService {
 
     public func setNewQueue(itemIds: [String], startPositionSeconds: TimeInterval) async throws {
         let ticks = Int64(startPositionSeconds * 10_000_000)
-        _ = try await http.send(SyncPlaySetNewQueueRequest(
-            itemIds: itemIds,
-            startPositionTicks: ticks
-        ))
+        _ = try await http.send(
+            SyncPlaySetNewQueueRequest(
+                itemIds: itemIds,
+                startPositionTicks: ticks
+            ))
     }
 
-    public func notifyReady(positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?) async {
+    public func notifyReady(
+        positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?
+    )
+        async
+    {
         do {
-            _ = try await http.send(SyncPlayReadyRequest(
-                positionTicks: Int64(positionSeconds * 10_000_000),
-                isPlaying: isPlaying,
-                playlistItemId: playlistItemId,
-                when: Date()
-            ))
+            _ = try await http.send(
+                SyncPlayReadyRequest(
+                    positionTicks: Int64(positionSeconds * 10_000_000),
+                    isPlaying: isPlaying,
+                    playlistItemId: playlistItemId,
+                    when: Date()
+                ))
         } catch {
             logger.warning("notifyReady failed: \(String(describing: error), privacy: .public)")
         }
     }
 
-    public func notifyBuffering(positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?) async {
+    public func notifyBuffering(
+        positionSeconds: TimeInterval, isPlaying: Bool, playlistItemId: String?
+    ) async {
         do {
-            _ = try await http.send(SyncPlayBufferingRequest(
-                positionTicks: Int64(positionSeconds * 10_000_000),
-                isPlaying: isPlaying,
-                playlistItemId: playlistItemId,
-                when: Date()
-            ))
+            _ = try await http.send(
+                SyncPlayBufferingRequest(
+                    positionTicks: Int64(positionSeconds * 10_000_000),
+                    isPlaying: isPlaying,
+                    playlistItemId: playlistItemId,
+                    when: Date()
+                ))
         } catch {
             logger.warning("notifyBuffering failed: \(String(describing: error), privacy: .public)")
         }
@@ -199,7 +210,7 @@ public actor JellyfinSyncPlayService: SyncPlayService {
         comps.path = basePath + "/socket"
         comps.queryItems = [
             URLQueryItem(name: "ApiKey", value: token),
-            URLQueryItem(name: "deviceId", value: http.deviceId)
+            URLQueryItem(name: "deviceId", value: http.deviceId),
         ]
         guard let url = comps.url else {
             AppLogger.error("SyncPlay WS: could not build socket URL")
@@ -257,7 +268,8 @@ public actor JellyfinSyncPlayService: SyncPlayService {
                 try await task.send(.string(frame))
             } catch {
                 let nsError = error as NSError
-                AppLogger.warning("SyncPlay WS: keepalive send failed — \(nsError.domain) \(nsError.code)")
+                AppLogger.warning(
+                    "SyncPlay WS: keepalive send failed — \(nsError.domain) \(nsError.code)")
                 return
             }
         }
@@ -270,10 +282,10 @@ public actor JellyfinSyncPlayService: SyncPlayService {
     private func handle(message: URLSessionWebSocketTask.Message) async {
         let data: Data
         switch message {
-        case let .string(s):
+        case .string(let s):
             guard let d = s.data(using: .utf8) else { return }
             data = d
-        case let .data(d):
+        case .data(let d):
             data = d
         @unknown default: return
         }
@@ -307,103 +319,188 @@ public actor JellyfinSyncPlayService: SyncPlayService {
                 AppLogger.debug("SyncPlay WS ← \(envelope.messageType) (ignored)")
             }
         } catch {
-            AppLogger.warning("SyncPlay WS: decode ignored — \(String(describing: error))")
+            AppLogger.warning("SyncPlay WS: decode ignored — \(Self.describe(error))")
         }
     }
 
+    // MARK: - Helpers
+
+    /// Domain + code (or type) only; never the error's description, which can
+    /// embed payload fragments.
+    private static func describe(_ error: Error) -> String {
+        if error is DecodingError { return "DecodingError" }
+        let ns = error as NSError
+        return "\(ns.domain) \(ns.code)"
+    }
+
+    /// Case-insensitive comparison key. UUIDs in dashed or N (32 hex) form map
+    /// to the same key; other identifiers compare case-insensitively as-is.
+    private static func normalizedId(_ id: String) -> String {
+        let lower = id.trimmingCharacters(in: .whitespaces).lowercased()
+        let undashed = lower.replacingOccurrences(of: "-", with: "")
+        if undashed.count == 32, undashed.allSatisfy(\.isHexDigit) { return undashed }
+        return lower
+    }
+
+    /// True when an update/command scoped to `groupId` should be ignored
+    /// because it targets a group other than the cached current one. With no
+    /// scope or no cached group there is nothing to contradict.
+    private func isForeign(_ groupId: String?) -> Bool {
+        guard let groupId, !groupId.isEmpty, let current = _currentGroup else { return false }
+        return Self.normalizedId(groupId) != Self.normalizedId(current.id)
+    }
+
+    /// Re-encodes a polymorphic inner payload only when it is a valid JSON
+    /// dictionary (scalars/NSNull would raise an ObjC exception).
+    private static func decodeObject<T: Decodable>(_ type: T.Type, from value: Any?) -> T? {
+        guard let dict = value as? [String: Any], JSONSerialization.isValidJSONObject(dict),
+            let data = try? JSONSerialization.data(withJSONObject: dict)
+        else { return nil }
+        return try? JellyfinJSON.decoder.decode(T.self, from: data)
+    }
+
     private func handleSyncPlayCommand(data: Data) {
-        guard
-            let message = try? JellyfinJSON.decoder.decode(SyncPlayCommandMessageDTO.self, from: data),
-            let cmd = message.data,
-            let commandName = cmd.command
-        else { return }
-
-        // PositionTicks is nullable in the spec (Pause without a target
-        // position is legal). Fall back to 0 so downstream player logic
-        // can still make a decision, though it'll usually just pause where
-        // it is.
-        let seconds: TimeInterval = cmd.positionTicks.map { TimeInterval($0) / 10_000_000 } ?? 0
-
-        AppLogger.info("SyncPlay WS SendCommand: \(commandName) @ \(seconds)s")
-        switch commandName {
-        case "Unpause":
-            eventContinuation.yield(.play(positionSeconds: seconds))
-        case "Pause":
-            eventContinuation.yield(.pause(positionSeconds: seconds))
-        case "Seek":
-            eventContinuation.yield(.seek(positionSeconds: seconds))
-        case "Stop":
-            eventContinuation.yield(.stop)
-        default:
-            logger.debug("Unknown SyncPlay command: \(commandName, privacy: .public)")
+        let message: SyncPlayCommandMessageDTO
+        do {
+            message = try JellyfinJSON.decoder.decode(SyncPlayCommandMessageDTO.self, from: data)
+        } catch {
+            AppLogger.warning("SyncPlay WS: command decode failed — \(Self.describe(error))")
+            return
         }
+        guard let cmd = message.data, let commandName = cmd.command else {
+            AppLogger.warning("SyncPlay WS: command without payload ignored")
+            return
+        }
+        guard let kind = SyncPlayCommandKind(rawValue: commandName) else {
+            logger.debug("Unsupported SyncPlay command ignored")
+            return
+        }
+        if isForeign(cmd.groupId) {
+            logger.debug("Foreign-group SyncPlay command ignored")
+            return
+        }
+        AppLogger.info("SyncPlay WS SendCommand: \(kind.rawValue)")
+        eventContinuation.yield(
+            .command(
+                SyncPlayCommand(
+                    kind: kind,
+                    groupId: cmd.groupId,
+                    playlistItemId: cmd.playlistItemId,
+                    positionSeconds: cmd.positionTicks.map { TimeInterval($0) / 10_000_000 },
+                    when: cmd.when,
+                    emittedAt: cmd.emittedAt
+                )))
     }
 
     private func handleSyncPlayGroupUpdate(data: Data) {
         // The `Data` field of a GroupUpdate is polymorphic on its inner
-        // `Type`, so we decode it via JSONSerialization to avoid modelling
-        // every variant. The dictionary walk here is deliberately shallow —
-        // we only care about a handful of update kinds.
+        // `Type`, so we walk it via JSONSerialization to avoid modelling
+        // every variant, type-guarding each inner payload.
         guard
             let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let update = root["Data"] as? [String: Any],
             let type = update["Type"] as? String
-        else { return }
+        else {
+            AppLogger.warning("SyncPlay WS: malformed GroupUpdate ignored")
+            return
+        }
+        let outerGroupId = update["GroupId"] as? String
 
         AppLogger.info("SyncPlay WS GroupUpdate: \(type)")
         switch type {
         case "GroupJoined":
-            // `Data.Data` is a full GroupInfoDto — pull it out via re-encode
-            // so we go through the same PascalCase-aware decoder as REST
-            // responses. Cheaper than hand-parsing every field.
-            if let inner = update["Data"],
-               let innerData = try? JSONSerialization.data(withJSONObject: inner),
-               let dto = try? JellyfinJSON.decoder.decode(SyncPlayGroupInfoDTO.self, from: innerData) {
-                let group = dto.toDomain()
-                _currentGroup = group
-                eventContinuation.yield(.groupChanged(group))
+            guard let dto = Self.decodeObject(SyncPlayGroupInfoDTO.self, from: update["Data"]),
+                !dto.groupId.isEmpty
+            else {
+                AppLogger.warning("SyncPlay WS: malformed GroupJoined ignored")
+                return
             }
-        case "GroupLeft":
+            if let outerGroupId, !outerGroupId.isEmpty,
+                Self.normalizedId(outerGroupId) != Self.normalizedId(dto.groupId)
+            {
+                AppLogger.warning("SyncPlay WS: GroupJoined identity mismatch ignored")
+                return
+            }
+            let group = dto.toDomain()
+            _currentGroup = group
+            eventContinuation.yield(.groupChanged(group))
+        case "GroupLeft", "NotInGroup", "GroupDoesNotExist":
+            // Membership-ending (GroupLeft) or rejection (stale state).
+            // Scoped to the current group; foreign ones are ignored.
+            let scope = outerGroupId ?? (type == "GroupLeft" ? update["Data"] as? String : nil)
+            if isForeign(scope) {
+                logger.debug("Foreign-group \(type, privacy: .public) ignored")
+                return
+            }
             _currentGroup = nil
             eventContinuation.yield(.disconnected)
         case "UserJoined":
+            guard !isForeign(outerGroupId) else { return }
             if let username = update["Data"] as? String {
-                eventContinuation.yield(.participantJoined(
-                    SyncPlayParticipant(id: username, userName: username, isOnline: true)
-                ))
+                eventContinuation.yield(
+                    .participantJoined(
+                        SyncPlayParticipant(id: username, userName: username, isOnline: true)
+                    ))
             }
         case "UserLeft":
+            guard !isForeign(outerGroupId) else { return }
             if let username = update["Data"] as? String {
                 eventContinuation.yield(.participantLeft(username))
             }
         case "PlayQueue":
-            if let inner = update["Data"],
-               let innerData = try? JSONSerialization.data(withJSONObject: inner),
-               let dto = try? JellyfinJSON.decoder.decode(PlayQueueUpdateDTO.self, from: innerData),
-               let playlist = dto.playlist,
-               let idx = dto.playingItemIndex, playlist.indices.contains(idx) {
-                let item = playlist[idx]
-                let seconds = TimeInterval(dto.startPositionTicks ?? 0) / 10_000_000
-                eventContinuation.yield(.queueUpdated(
-                    itemId: item.itemId,
-                    playlistItemId: item.playlistItemId,
-                    startPositionSeconds: seconds,
-                    isPlaying: dto.isPlaying ?? false
-                ))
-            }
+            handlePlayQueue(update: update, groupId: outerGroupId)
         case "StateUpdate":
-            // No dedicated event yet — the important state changes
-            // (Playing/Paused) are already conveyed by the SyncPlayCommand
-            // messages that accompany them.
-            break
-        case "NotInGroup", "GroupDoesNotExist":
-            // Server rejected an action because our group state is stale.
-            _currentGroup = nil
-            eventContinuation.yield(.disconnected)
+            // Diagnostic only: state changes reach us as SyncPlayCommand
+            // messages. Never translated to stop/close.
+            if let state = update["Data"] as? [String: Any] {
+                let s = (state["State"] as? String) ?? "?"
+                let r = (state["Reason"] as? String) ?? "?"
+                logger.debug(
+                    "SyncPlay StateUpdate state=\(s, privacy: .public) reason=\(r, privacy: .public)"
+                )
+            } else {
+                logger.debug("SyncPlay StateUpdate with malformed payload")
+            }
         case "LibraryAccessDenied":
-            logger.warning("SyncPlay library access denied")
+            logger.warning("SyncPlay library access denied (diagnostic only)")
         default:
-            logger.debug("Unhandled GroupUpdate type: \(type, privacy: .public)")
+            logger.debug("Unsupported GroupUpdate type ignored")
         }
+    }
+
+    private func handlePlayQueue(update: [String: Any], groupId: String?) {
+        if isForeign(groupId) {
+            logger.debug("Foreign-group PlayQueue ignored")
+            return
+        }
+        guard let dto = Self.decodeObject(PlayQueueUpdateDTO.self, from: update["Data"]),
+            let playlist = dto.playlist,
+            let idx = dto.playingItemIndex
+        else {
+            AppLogger.warning("SyncPlay WS: malformed PlayQueue ignored")
+            return
+        }
+        var itemId: String?
+        var playlistItemId: String?
+        if idx == -1 || (playlist.isEmpty && idx == 0) {
+            // Valid queue with no current item.
+        } else if playlist.indices.contains(idx) {
+            itemId = playlist[idx].itemId
+            playlistItemId = playlist[idx].playlistItemId
+        } else {
+            AppLogger.warning("SyncPlay WS: PlayQueue index out of range ignored")
+            return
+        }
+        eventContinuation.yield(
+            .queueChanged(
+                SyncPlayQueueUpdate(
+                    groupId: groupId,
+                    itemId: itemId,
+                    playlistItemId: playlistItemId,
+                    startPositionSeconds: TimeInterval(dto.startPositionTicks ?? 0) / 10_000_000,
+                    isPlaying: dto.isPlaying ?? false,
+                    reason: dto.reason,
+                    lastUpdate: dto.lastUpdate
+                )))
     }
 }
