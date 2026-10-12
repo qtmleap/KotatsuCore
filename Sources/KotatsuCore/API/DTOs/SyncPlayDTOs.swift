@@ -150,6 +150,7 @@ public struct PlayQueueUpdateDTO: Codable, Sendable {
     public let playingItemIndex: Int?
     public let startPositionTicks: Int64?
     public let isPlaying: Bool?
+    public let lastUpdate: Date?
 
     private enum CodingKeys: String, CodingKey {
         case reason = "Reason"
@@ -157,6 +158,18 @@ public struct PlayQueueUpdateDTO: Codable, Sendable {
         case playingItemIndex = "PlayingItemIndex"
         case startPositionTicks = "StartPositionTicks"
         case isPlaying = "IsPlaying"
+        case lastUpdate = "LastUpdate"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+        playlist = try c.decodeIfPresent([SyncPlayQueueItemDTO].self, forKey: .playlist)
+        playingItemIndex = try c.decodeIfPresent(Int.self, forKey: .playingItemIndex)
+        startPositionTicks = try c.decodeIfPresent(Int64.self, forKey: .startPositionTicks)
+        isPlaying = try c.decodeIfPresent(Bool.self, forKey: .isPlaying)
+        // Metadata only: an unparseable timestamp must not drop the queue.
+        lastUpdate = (try? c.decodeIfPresent(Date.self, forKey: .lastUpdate)) ?? nil
     }
 }
 

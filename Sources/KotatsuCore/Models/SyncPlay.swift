@@ -6,7 +6,10 @@ public struct SyncPlayGroup: Sendable, Codable, Identifiable, Hashable {
     public let currentItemId: String?
     public let participants: [SyncPlayParticipant]
 
-    public init(id: String, name: String, currentItemId: String? = nil, participants: [SyncPlayParticipant] = []) {
+    public init(
+        id: String, name: String, currentItemId: String? = nil,
+        participants: [SyncPlayParticipant] = []
+    ) {
         self.id = id
         self.name = name
         self.currentItemId = currentItemId
@@ -42,6 +45,13 @@ public enum SyncPlayEvent: Sendable, Hashable {
     /// Server broadcasted a new playlist for the group. `playlistItemId` is
     /// the server-generated identifier for the current item; clients need
     /// it when calling `/SyncPlay/Ready`.
-    case queueUpdated(itemId: String, playlistItemId: String, startPositionSeconds: TimeInterval, isPlaying: Bool)
+    case queueUpdated(
+        itemId: String, playlistItemId: String, startPositionSeconds: TimeInterval, isPlaying: Bool)
     case disconnected
+    /// Typed command with group/slot/time metadata. The real SDK emits this
+    /// instead of the legacy `play`/`pause`/`seek`/`stop` cases.
+    case command(SyncPlayCommand)
+    /// Typed PlayQueue update. Item fields are nil when the queue has no
+    /// current item. The real SDK emits this instead of `queueUpdated`.
+    case queueChanged(SyncPlayQueueUpdate)
 }
